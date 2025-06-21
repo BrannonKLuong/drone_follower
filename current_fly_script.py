@@ -1,10 +1,10 @@
 import rclpy
 from rclpy.node import Node
 from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleLocalPosition, VehicleStatus, TrajectorySetpoint
-from geometry_msgs.msg import PoseStamped # NEW: Import for Strobe Light position
+from geometry_msgs.msg import PoseStamped
 import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-import math # Import math for distance calculation
+import math
 
 class DroneCommander(Node):
     def __init__(self):
@@ -23,41 +23,33 @@ class DroneCommander(Node):
         self.local_position_sub = self.create_subscription(VehicleLocalPosition, '/fmu/out/vehicle_local_position', self.local_position_callback, qos_profile_px4)
         self.vehicle_status_sub = self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_profile_px4)
 
-        # NEW: Strobe light subscriber
         self.strobe_light_sub = self.create_subscription(
             PoseStamped,
-            '/strobe_light_position', # Topic name for the strobe light
+            '/strobe_light_position',
             self.strobe_light_callback,
-            10 # QoS depth
+            10
         )
-        self.strobe_light_position = None # Initialize to store the latest strobe position
-        self.get_logger().info("Subscribed to strobe light position.")
+        self.strobe_light_position = None
 
         self.offboard_setpoint_counter = 0
         self.local_position = VehicleLocalPosition()
         self.vehicle_status = VehicleStatus()
 
-        # Current target for go_to_position (NED frame) - primarily for internal tracking
         self.current_target_x = 0.0
         self.current_target_y = 0.0
         self.current_target_z = 0.0 
-        self.target_reached_tolerance = 0.2 # meters, how close to target to consider reached
+        self.target_reached_tolerance = 0.2
 
-        # Waypoint related variables (now commented out/unused for strobe following, but kept for reference)
-        # self.waypoints = [] # List of (x, y, z) waypoints in ENU
-        # self.current_waypoint_index = 0
-        # self.waypoint_reached_duration_counter = 0 # Counter to ensure waypoint is held for a bit
-        # self.mission_completed = False # Flag to stop waypoint processing
+        # NEW: Variables for mission duration and completion
+        self.mission_start_time = None  # To store the timestamp when offboard mode activates
+        self.mission_duration_limit = 10.0 # seconds. Drone will attempt to land after this duration.
+        self.mission_completed = False  # Flag to indicate mission is over and to shut down
+        self.landing_initiated = False # NEW: Flag to ensure landing sequence starts once
 
         self.timer = self.create_timer(0.1, self.timer_callback) # 10Hz
 
         self.get_logger().info("Drone Commander Node Initialized. Waiting for Mock PX4 to be ready...")
         
-        # --- Trajectory definition (now unused for strobe following, but kept for reference) ---
-        # self.define_square_trajectory() 
-        # self.get_logger().info(f"Initial trajectory defined with {len(self.waypoints)} waypoints.")
-
-
     def local_position_callback(self, msg):
         """Callback for VehicleLocalPosition messages."""
         self.local_position = msg
@@ -65,9 +57,13 @@ class DroneCommander(Node):
     def vehicle_status_callback(self, msg):
         """Callback for VehicleStatus messages."""
         self.vehicle_status = msg
+        # NEW: Set mission_start_time once offboard mode is truly active
+        if self.mission_start_time is None and self.vehicle_status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            self.mission_start_time = self.get_clock().now().nanoseconds / 1e9
+            self.get_logger().info(f"Offboard mode activated. Mission timer started for {self.mission_duration_limit} seconds.")
 
     def strobe_light_callback(self, msg: PoseStamped):
-        """NEW: Callback for Strobe Light position messages."""
+        """Callback for Strobe Light position messages."""
         self.strobe_light_position = msg.pose.position
         # self.get_logger().debug(f"Strobe Light: x={self.strobe_light_position.x:.2f}, y={self.strobe_light_position.y:.2f}, z={self.strobe_light_position.z:.2f}")
 
@@ -116,7 +112,6 @@ class DroneCommander(Node):
         msg.position[1] = x # NED Y from ENU X
         msg.position[2] = -z # NED Z from ENU Z (negated)
 
-        # Set all velocity and acceleration fields to NaN to indicate position control only
         msg.velocity[0] = float('nan')
         msg.velocity[1] = float('nan')
         msg.velocity[2] = float('nan')
@@ -125,35 +120,20 @@ class DroneCommander(Node):
         msg.acceleration[2] = float('nan')
         self.trajectory_setpoint_pub.publish(msg)
 
-        # Update internal target for position checking (in NED frame)
         self.current_target_x = msg.position[0]
         self.current_target_y = msg.position[1]
         self.current_target_z = msg.position[2]
 
     def is_at_target_position(self) -> bool:
         """
-        Check if the drone's current local position is close to the current target position.
-        Checks in NED frame.
+        Check if the drone's current local position (NED) is close to the current target position (NED).
         """
         dx = self.local_position.x - self.current_target_x
         dy = self.local_position.y - self.current_target_y
-        dz = self.local_position.z - self.current_target_z # NED Z
+        dz = self.local_position.z - self.current_target_z
 
         distance = math.sqrt(dx*dx + dy*dy + dz*dz)
         return distance < self.target_reached_tolerance
-
-    # --- Waypoint functions (kept for reference, but not used in current strobe follow logic) ---
-    # def define_square_trajectory(self):
-    #     altitude = 3.0 # meters, ENU Z (up)
-    #     side_length = 5.0 # meters
-    #     self.waypoints = [
-    #         (0.0, 0.0, altitude), # 0: Takeoff point, ascend to altitude
-    #         (side_length, 0.0, altitude), # 1: Move East
-    #         (side_length, side_length, altitude), # 2: Move North-East
-    #         (0.0, side_length, altitude), # 3: Move North
-    #         (0.0, 0.0, altitude), # 4: Return to takeoff X,Y
-    #         (0.0, 0.0, 0.0) # 5: Land
-    #     ]
 
     def arm(self):
         """Arm the drone."""
@@ -168,7 +148,7 @@ class DroneCommander(Node):
     def set_offboard_mode(self):
         """Set the drone to offboard control mode."""
         self.get_logger().info("Setting offboard mode...")
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0) # Custom Mode 6 for Offboard
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
 
     def go_to_position(self, x: float, y: float, z: float):
         """
@@ -181,67 +161,72 @@ class DroneCommander(Node):
     def timer_callback(self):
         """
         Main loop for the drone commander.
-        Handles arming, offboard mode, and strobe following.
+        Handles arming, offboard mode, strobe following, and mission termination.
         """
-        # This section commented out as mission_completed and waypoint logic is replaced
-        # if self.mission_completed:
-        #     if self.vehicle_status.arming_state == VehicleStatus.ARMING_STATE_DISARMED and rclpy.ok():
-        #         self.get_logger().info("All tasks complete. Shutting down ROS context.")
-        #         self.destroy_node()
-        #         rclpy.shutdown()
-        #     return
+        # Graceful shutdown logic at the start of the callback
+        if self.mission_completed:
+            # If mission is complete, ensure drone is disarmed and then shut down node
+            if self.vehicle_status.arming_state == VehicleStatus.ARMING_STATE_DISARMED and rclpy.ok(): 
+                self.get_logger().info("Mission completed and drone disarmed. Shutting down ROS context.")
+                # Delay destruction slightly to ensure last messages are sent
+                time.sleep(1.0) 
+                self.destroy_node() 
+                rclpy.shutdown() 
+            return # Exit timer_callback early if mission is complete
 
-        self.publish_offboard_control_mode() # Always publish offboard control mode
+        self.publish_offboard_control_mode() # Always publish offboard control mode to maintain mode
 
-        # Increment counter to manage state transitions
         self.offboard_setpoint_counter += 1
 
         # State machine for arming and setting offboard mode
-        if self.offboard_setpoint_counter == 100: # After 10 seconds (100 * 0.1s)
+        if self.offboard_setpoint_counter == 100:
             self.arm()
             self.get_logger().info("Waiting for arming to complete before setting offboard mode...")
-        elif self.offboard_setpoint_counter == 120: # 2 seconds after arm
+        elif self.offboard_setpoint_counter == 120:
             self.set_offboard_mode()
             self.get_logger().info("Waiting for offboard mode to activate...")
         
-        # --- NEW Strobe Following Logic ---
-        # This block replaces the previous waypoint following logic
+        # Strobe Following Logic
         elif self.vehicle_status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            # Check for mission duration limit
+            if self.mission_start_time is not None:
+                current_time = self.get_clock().now().nanoseconds / 1e9
+                elapsed_mission_time = current_time - self.mission_start_time
+
+                if elapsed_mission_time >= self.mission_duration_limit:
+                    if not self.landing_initiated: # Ensure this block runs only once
+                        self.get_logger().info(f"Mission duration limit ({self.mission_duration_limit}s) reached. Initiating landing sequence to origin.")
+                        self.landing_initiated = True # Set flag to prevent re-initiation
+
+                    # Command drone to return to origin (0,0,0 ENU) and then land
+                    # It will first move horizontally to 0,0 and then descend
+                    self.go_to_position(0.0, 0.0, 0.0) # Command to ENU origin (X=0, Y=0, Z=0)
+                    
+                    # If close to ground, disarm and set mission completed
+                    # Note: local_position.z is NED, so 0 is ground. is_at_target_position checks current_target_z (NED).
+                    # So it's checking if the drone is at (0,0,0) NED, which corresponds to (0,0,0) ENU for this case
+                    if self.is_at_target_position(): # Checks if drone is at the commanded (0,0,0) NED target
+                         self.disarm()
+                         self.mission_completed = True
+                    return # Exit early to only handle landing
+            
+            # If not landing, continue following strobe
             if self.strobe_light_position is not None:
-                # Get the latest strobe light position (already in ENU)
                 target_x_enu = self.strobe_light_position.x
                 target_y_enu = self.strobe_light_position.y
                 target_z_enu = self.strobe_light_position.z
 
-                # Command the drone to move to the strobe light's position
                 self.go_to_position(target_x_enu, target_y_enu, target_z_enu)
                 self.get_logger().debug(f"Following Strobe: Target X={target_x_enu:.2f}, Y={target_y_enu:.2f}, Z={target_z_enu:.2f}")
             else:
                 self.get_logger().info("Waiting for strobe light position... Hovering at (0,0,2) ENU.")
-                # If no strobe light position yet, hover at a safe altitude (e.g., 2m ENU)
-                # This ensures the drone takes off and waits, rather than crashing or doing nothing.
                 self.go_to_position(0.0, 0.0, 2.0)
-
-        # You might want to add a landing condition here, e.g., after a certain duration of following,
-        # or if the strobe light disappears for a long time. For this test, it will just follow indefinitely.
-        # For example, to disarm after 60 seconds (600 timer cycles) of being in offboard mode:
-        # if self.vehicle_status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD and \
-        #    self.offboard_setpoint_counter > 600:
-        #    self.disarm()
-        #    self.get_logger().info("Disarming after 60 seconds of following.")
-        #    # Add a flag to indicate mission completed and allow graceful shutdown
-        #    # self.mission_completed = True # Would require uncommenting self.mission_completed check at top
-
-        # Placeholder for previous specific counter logic (now handled by state machine above)
-        # elif self.offboard_setpoint_counter == 150:
-        #     pass # No action needed here, the main state machine will handle commands
 
 
 def main(args=None):
     rclpy.init(args=args)
     drone_commander = DroneCommander()
     rclpy.spin(drone_commander)
-    # Ensure node is destroyed only if still active
     if rclpy.ok():
         drone_commander.destroy_node()
     rclpy.shutdown()
