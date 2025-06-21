@@ -3,14 +3,13 @@ from rclpy.node import Node
 from px4_msgs.msg import VehicleCommand, VehicleCommandAck, VehicleStatus, VehicleLocalPosition, VehicleOdometry, TrajectorySetpoint
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import rclpy.logging
-import math # Import math for distance calculation
 
 class MockPX4Interface(Node):
     def __init__(self):
         super().__init__('mock_px4_interface')
 
         qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT, # Compatible with PX4
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=5
         )
@@ -20,9 +19,9 @@ class MockPX4Interface(Node):
             VehicleCommand,
             '/fmu/in/vehicle_command',
             self.vehicle_command_callback,
-            10 # QoS depth for publisher, not custom profile
+            10
         )
-        self.trajectory_setpoint_sub = self.create_subscription(
+        self.trajectory_setpoint_sub = self.create_subscription( # NEW SUBSCRIBER
             TrajectorySetpoint,
             '/fmu/in/trajectory_setpoint',
             self.trajectory_setpoint_callback,
@@ -79,9 +78,8 @@ class MockPX4Interface(Node):
         elif msg.command == VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF:
             self.nav_state = VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF # USE CORRECT CONSTANT
             self.get_logger().info(f"Mock PX4: TAKEOFF to {msg.param7}m")
-            # Convert positive altitude to NED negative Z for target
-            if msg.param7 > 0: self.target_z = -float(msg.param7) 
-            else: self.target_z = float(msg.param7) # Already negative or zero
+            self.target_z = float(msg.param7) # Update target Z for takeoff
+            if self.target_z > 0: self.target_z = -self.target_z # Convert positive altitude to NED negative Z
 
         elif msg.command == VehicleCommand.VEHICLE_CMD_NAV_LAND:
             self.nav_state = VehicleStatus.NAVIGATION_STATE_AUTO_LAND # USE CORRECT CONSTANT
@@ -90,8 +88,7 @@ class MockPX4Interface(Node):
 
         self.vehicle_command_ack_pub.publish(ack)
 
-    def trajectory_setpoint_callback(self, msg: TrajectorySetpoint):
-        # Position is expected in NED from the commander script
+    def trajectory_setpoint_callback(self, msg: TrajectorySetpoint): # NEW CALLBACK
         self.get_logger().debug(f"Received Trajectory Setpoint: x={msg.position[0]:.2f}, y={msg.position[1]:.2f}, z={msg.position[2]:.2f}")
         # Update target based on received setpoint
         self.target_x = msg.position[0]
@@ -109,44 +106,42 @@ class MockPX4Interface(Node):
         self.vehicle_status_pub.publish(status_msg)
 
         # Simulate movement towards target if in Offboard or Takeoff/Land
-        # Movement speed is now per axis, allowing diagonal movement
-        movement_speed_per_step = 0.1 # meters per 0.1s update = 1 m/s (10Hz * 0.1m)
-        position_tolerance = 0.1 # meters, how close to target before snapping
+        movement_speed = 0.05 # m/s or m/iteration (0.05 * 10Hz = 0.5 m/s)
 
         if self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD or \
            self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF or \
            self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
             
-            # --- Simulate X movement ---
-            if abs(self.target_x - self.current_x) > position_tolerance:
+            # Move X towards target_x
+            if abs(self.target_x - self.current_x) > movement_speed:
                 if self.target_x > self.current_x:
-                    self.current_x += min(movement_speed_per_step, self.target_x - self.current_x)
+                    self.current_x += movement_speed
                 else:
-                    self.current_x -= min(movement_speed_per_step, -(self.target_x - self.current_x))
+                    self.current_x -= movement_speed
             else:
                 self.current_x = self.target_x # Snap to target if very close
 
-            # --- Simulate Y movement ---
-            if abs(self.target_y - self.current_y) > position_tolerance:
+            # Move Y towards target_y
+            if abs(self.target_y - self.current_y) > movement_speed:
                 if self.target_y > self.current_y:
-                    self.current_y += min(movement_speed_per_step, self.target_y - self.current_y)
+                    self.current_y += movement_speed
                 else:
-                    self.current_y -= min(movement_speed_per_step, -(self.target_y - self.current_y))
+                    self.current_y -= movement_speed
             else:
                 self.current_y = self.target_y # Snap to target if very close
             
-            # --- Simulate Z movement (NED: negative Z is up) ---
-            if abs(self.target_z - self.current_z) > position_tolerance:
+            # Move Z towards target_z (remember NED: negative Z is up)
+            if abs(self.target_z - self.current_z) > movement_speed:
                 if self.target_z > self.current_z: # If target is deeper (more positive Z)
-                    self.current_z += min(movement_speed_per_step, self.target_z - self.current_z)
+                    self.current_z += movement_speed
                 else: # If target is higher (more negative Z)
-                    self.current_z -= min(movement_speed_per_step, -(self.target_z - self.current_z))
+                    self.current_z -= movement_speed
             else:
                 self.current_z = self.target_z # Snap to target if very close
 
-            # Handle disarming after landing (when Z target is reached and vehicle is in land mode)
+            # Handle disarming after landing (when Z target is reached)
             if self.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND and \
-               abs(self.current_z - 0.0) < position_tolerance: # Close to ground (0 in NED)
+               abs(self.current_z) < 0.05: # Close to ground (0 in NED)
                 self.current_z = 0.0
                 self.arming_state = VehicleStatus.ARMING_STATE_DISARMED
                 self.nav_state = VehicleStatus.NAVIGATION_STATE_MANUAL
@@ -155,12 +150,9 @@ class MockPX4Interface(Node):
         # Publish mock VehicleLocalPosition
         local_pos_msg = VehicleLocalPosition()
         local_pos_msg.timestamp = self.get_clock().now().nanoseconds // 1000
-        # CRUCIAL FIX: Explicitly cast to float
-        local_pos_msg.x = float(self.current_x)
-        local_pos_msg.y = float(self.current_y)
-        local_pos_msg.z = float(self.current_z) 
-        # No more problematic local_pos_msg attributes like .q, .pose_valid, .v_z
-
+        local_pos_msg.x = self.current_x
+        local_pos_msg.y = self.current_y
+        local_pos_msg.z = self.current_z 
         self.vehicle_local_position_pub.publish(local_pos_msg)
 
         # Publish mock VehicleOdometry
