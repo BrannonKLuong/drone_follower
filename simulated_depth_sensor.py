@@ -35,27 +35,26 @@ class SimulatedDepthSensorPublisher(Node):
         self.point_cloud_publisher = self.create_publisher(PointCloud2, '/simulated_depth_sensor/points', 10)
         self.obstacle_marker_publisher = self.create_publisher(Marker, '/obstacle_markers', 10)
 
-        # --- MAZE WITH ADDED OBSTACLES ---
+        # --- NEW: Distinguishing between walls and obstacles ---
         self.obstacles = [
-            # Left Wall
-            (-2.0, 2.0, 1.5),
-            (-2.0, 4.0, 1.5),
-            (-2.0, 6.0, 1.5),
-            (-2.0, 8.0, 1.5),
-            # Right Wall
-            (2.0, 2.0, 1.5),
-            (2.0, 4.0, 1.5),
-            (2.0, 6.0, 1.5),
-            (2.0, 8.0, 1.5),
-            # Back Wall
-            (0.0, 10.0, 1.5),
-            (2.0, 10.0, 1.5),
-            (4.0, 10.0, 1.5),
-            (6.0, 10.0, 1.5),
-            (8.0, 10.0, 1.5),
-            # --- NEW: Obstacles inside the L-path ---
-            (0.5, 6.0, 1.5),  # Obstacle in the first corridor
-            (4.0, 9.0, 1.5),  # Obstacle in the second corridor
+            # Walls are 'wall' type
+            {'pos': (-2.5, 2.0, 1.5), 'type': 'wall'},
+            {'pos': (-2.5, 4.0, 1.5), 'type': 'wall'},
+            {'pos': (-2.5, 6.0, 1.5), 'type': 'wall'},
+            {'pos': (-2.5, 8.0, 1.5), 'type': 'wall'},
+            {'pos': (2.5, 2.0, 1.5), 'type': 'wall'},
+            {'pos': (2.5, 4.0, 1.5), 'type': 'wall'},
+            {'pos': (2.5, 6.0, 1.5), 'type': 'wall'},
+            {'pos': (2.5, 8.0, 1.5), 'type': 'wall'},
+            {'pos': (0.0, 10.0, 1.5), 'type': 'wall'},
+            {'pos': (2.5, 10.0, 1.5), 'type': 'wall'},
+            {'pos': (5.0, 10.0, 1.5), 'type': 'wall'},
+            {'pos': (7.5, 10.0, 1.5), 'type': 'wall'},
+            # Nuisance obstacles are 'obstacle' type
+            {'pos': (1.0, 4.0, 1.5), 'type': 'obstacle'},
+            {'pos': (-1.0, 7.0, 1.5), 'type': 'obstacle'},
+            {'pos': (3.0, 9.0, 1.5), 'type': 'obstacle'},
+            {'pos': (6.0, 9.0, 1.5), 'type': 'obstacle'},
         ]
         
         self.timer = self.create_timer(0.1, self.timer_callback)
@@ -65,7 +64,7 @@ class SimulatedDepthSensorPublisher(Node):
         self.drone_y_enu = msg.x
         self.drone_z_enu = -msg.z
 
-    def _publish_single_obstacle_marker(self, marker_id, x, y, z):
+    def _publish_single_obstacle_marker(self, marker_id, x, y, z, color):
         marker_msg = Marker()
         marker_msg.header.stamp = self.get_clock().now().to_msg()
         marker_msg.header.frame_id = 'odom' 
@@ -80,23 +79,31 @@ class SimulatedDepthSensorPublisher(Node):
         marker_msg.scale.x = 0.8
         marker_msg.scale.y = 0.8
         marker_msg.scale.z = 3.0
-        marker_msg.color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.8)
+        marker_msg.color = color # Use the provided color
         marker_msg.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
         self.obstacle_marker_publisher.publish(marker_msg)
 
     def timer_callback(self):
         points_data = [] 
         
-        for i, (obs_x, obs_y, obs_z) in enumerate(self.obstacles):
-            self._publish_single_obstacle_marker(i, obs_x, obs_y, obs_z)
+        wall_color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.8)  # Orange
+        obstacle_color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=1.0) # Cyan
+
+        for i, obs_data in enumerate(self.obstacles):
+            pos = obs_data['pos']
+            obs_type = obs_data['type']
+            
+            color = wall_color if obs_type == 'wall' else obstacle_color
+            
+            self._publish_single_obstacle_marker(i, pos[0], pos[1], pos[2], color)
             
             dist_to_obs_from_drone = math.sqrt(
-                (obs_x - self.drone_x_enu)**2 +
-                (obs_y - self.drone_y_enu)**2 +
-                (obs_z - self.drone_z_enu)**2
+                (pos[0] - self.drone_x_enu)**2 +
+                (pos[1] - self.drone_y_enu)**2 +
+                (pos[2] - self.drone_z_enu)**2
             )
             if dist_to_obs_from_drone < self.sensor_range:
-                points_data.append((obs_x, obs_y, obs_z))
+                points_data.append(pos)
 
         if points_data:
             cloud_msg = PointCloud2()

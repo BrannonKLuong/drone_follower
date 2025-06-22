@@ -12,8 +12,13 @@ class ObstaclePerceptionNode(Node):
     def __init__(self):
         super().__init__('obstacle_perception_node')
 
-        self.get_logger().info("Obstacle Perception Node started (Closest Point Logic).")
+        self.get_logger().info("Obstacle Perception Node started (Clustering Logic).")
         
+        # --- NEW PARAMETER ---
+        self.declare_parameter('clustering_radius', 1.0) # Radius to group points into a single obstacle
+        self.clustering_radius = self.get_parameter('clustering_radius').get_parameter_value().double_value
+        self.get_logger().info(f"Clustering radius set to: {self.clustering_radius}m")
+
         # Current drone position in ENU
         self.drone_x_enu = 0.0
         self.drone_y_enu = 0.0
@@ -58,26 +63,47 @@ class ObstaclePerceptionNode(Node):
         if not points:
             return
 
-        # --- FIND CLOSEST POINT LOGIC ---
-        closest_point = None
+        # --- IMPROVED CLUSTERING LOGIC ---
+        # 1. Find the single point closest to the drone to act as our "seed".
+        seed_point = None
         min_distance_sq = float('inf')
-
         for point in points:
             dist_sq = (point['x'] - self.drone_x_enu)**2 + (point['y'] - self.drone_y_enu)**2
             if dist_sq < min_distance_sq:
                 min_distance_sq = dist_sq
-                closest_point = point
+                seed_point = point
         
-        if closest_point:
-            # Publish the closest point for the drone's logic
+        if not seed_point:
+            return
+
+        # 2. Create a cluster of points that are near the seed point.
+        cluster_points = []
+        for point in points:
+            dist_to_seed_sq = (point['x'] - seed_point['x'])**2 + (point['y'] - seed_point['y'])**2
+            if dist_to_seed_sq < self.clustering_radius**2:
+                cluster_points.append(point)
+
+        # 3. Calculate the centroid (average position) of this cluster.
+        if cluster_points:
+            sum_x, sum_y, sum_z = 0.0, 0.0, 0.0
+            for point in cluster_points:
+                sum_x += point['x']
+                sum_y += point['y']
+                sum_z += point['z']
+            
+            centroid_x = sum_x / len(cluster_points)
+            centroid_y = sum_y / len(cluster_points)
+            centroid_z = sum_z / len(cluster_points)
+
+            # 4. Publish this stable centroid as the threat.
             obstacle_point_msg = Point()
-            obstacle_point_msg.x = closest_point['x']
-            obstacle_point_msg.y = closest_point['y']
-            obstacle_point_msg.z = closest_point['z']
+            obstacle_point_msg.x = centroid_x
+            obstacle_point_msg.y = centroid_y
+            obstacle_point_msg.z = centroid_z
             self.obstacle_publisher.publish(obstacle_point_msg)
 
             # Publish the red sphere marker for RViz at the same location
-            self.publish_obstacle_marker(closest_point['x'], closest_point['y'], closest_point['z'])
+            self.publish_obstacle_marker(centroid_x, centroid_y, centroid_z)
 
     def read_points(self, cloud_msg):
         """ Helper function to parse PointCloud2 data. """
