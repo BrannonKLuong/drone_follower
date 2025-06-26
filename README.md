@@ -1,1 +1,71 @@
-# drone_follower
+# Autonomous Tactical Scouting Drone
+
+**Status:** `In Progress - Hardware-in-the-Loop Validation`
+
+This repository contains the ROS 2 software stack for a compact, autonomous drone designed for tactical indoor and close-quarters operations. The system uses an offboard computing architecture to enable a small, agile aerial platform to perform complex perception and navigation tasks, controlled entirely by real-time hand gestures from an operator.
+
+---
+
+## Live Demonstration
+
+The core perception and control loop has been successfully validated in a software-in-the-loop (SITL) environment. The following demonstrations show the system in action:
+
+| Hand Gesture Control                                       | Strobe Following & Obstacle Avoidance                                |
+| :--------------------------------------------------------- | :------------------------------------------------------------------- |
+| ![Hand Gesture Control](./assets/Drone%20Hand%20Gesture%20Ros.gif) | ![Strobe Following](./assets/Drone%20Following%20Strobe%20Node%20Ros.gif) |
+
+* **On the left:** The "Hand Gesture Recognition" node processes a live video feed, using an AI model (MediaPipe) to classify hand poses into high-level flight commands. **(Note: This demonstration uses a standard 2D webcam as a stand-in for the final system's infrared sensor).**
+* **On the right:** The drone autonomously follows a moving target (the magenta sphere) while using its potential field algorithm to dynamically navigate the maze environment.
+
+---
+
+## Core Features & Capabilities
+
+* **Real-Time Hand Gesture Control:** The drone is controlled by high-level commands generated from an AI-powered perception node. The system uses a debouncing algorithm, requiring a gesture to be held for several frames before a command is confirmed, preventing accidental actions. Implemented gestures include:
+    * **Fist (`HOVER`):** Commands the drone to stop its current task and hold its position.
+    * **Open Palm (`RESUME_STROBE_FOLLOW`):** Commands the drone to follow its primary mission objective (a moving target in simulation).
+    * **Pointing Finger (`GO_THROUGH_DOOR`):** Commands the drone to move forward. **(This functionality will be upgraded to true 3D directional pointing upon integration of the depth camera).**
+
+* **Dynamic Obstacle Avoidance via Potential Fields:** The drone uses a custom potential field algorithm for navigation. This method calculates a real-time trajectory based on two competing forces:
+    * **Attractive Force:** A vector pulling the drone towards its current goal (e.g., a waypoint or a moving target).
+    * **Repulsive Force:** A vector pushing the drone away from any nearby obstacles. This force is generated using real-time data from the **`obstacle_perception_node`**, allowing the drone to smoothly maneuver around objects without a pre-planned path.
+
+* **Multi-State Control System:** A state machine manages the drone's behavior, allowing it to seamlessly arbitrate between different modes, such as following a target, executing a manual command, or initiating a "lost target" search pattern.
+
+## System Architecture
+
+This project uses a **Remote Computing (or "Offboard Computing")** architecture to maximize the drone's agility and flight time while enabling powerful AI processing.
+
+1.  **On-Drone Hardware (The "Body"):** A lightweight Raspberry Pi 4 acts as a "video bridge." Its sole purpose is to stream sensor data from an Intel RealSense D435i depth camera over a low-latency wireless data link.
+2.  **Ground Station (The "Brain"):** A powerful ground computer receives the sensor data and runs the entire ROS 2 autonomy stack, including the perception, navigation, and control nodes. It sends high-level flight commands back to the drone.
+
+## Software Node Breakdown
+
+This system is composed of several custom ROS 2 nodes that work in concert.
+
+* **`current_fly_script.py` (The Brain):** The central command node. It subscribes to all sensor and command inputs and is responsible for making high-level decisions. It implements the core Potential Field algorithm, using the simplified threat data from the perception node to calculate repulsive forces.
+* **`hand_gesture_recognition_node.py` (The Operator Interface):** This node uses OpenCV and the MediaPipe AI model to process a video stream. It detects hand landmarks, classifies the gesture, and publishes the corresponding command string to the `/hand_commands` topic. For current hardware testing, it processes a 2D video stream from a standard webcam; for the final system, it will process the infrared stream from the D435i.
+* **`obstacle_perception_node.py` (The Eyes):** This node is designed to subscribe to the raw `PointCloud2` data from the depth sensor. It processes this complex 3D data to find the most immediate threat to the drone and publishes the stable 3D coordinates of that threat to the `/detected_obstacle` topic. This simplifies the world for the "Brain."
+* **`mock_px4.py` (Simulated Flight Controller):** In the simulation, this node mimics a real PX4 flight controller. It receives `TrajectorySetpoint` messages and publishes the drone's changing position and status. This is replaced by the real Cube Orange+ in the hardware phase.
+* **`simulated_depth_sensor_publisher.py` (Simulated World):** This node creates the virtual maze environment by publishing the location of walls and obstacles as `PointCloud2` data. This is replaced by the real Intel RealSense D435i in the hardware phase.
+
+## How to Run (Simulation)
+
+The simulation is launched using the `run_all.sh` script, which automates the setup of the entire environment.
+
+1.  **`run_all.sh`:** This main script opens a series of terminals.
+2.  **Terminal 1 (`mock_px4`):** Starts the simulated flight controller.
+3.  **Terminal 2 (`simulated_depth_sensor`):** Starts the world generator, creating the maze.
+4.  **Terminal 3 (`RViz2`):** Launches the 3D visualizer.
+5.  **Terminal 4 (`obstacle_perception`):** Starts the perception node to process the simulated sensor data.
+6.  **Terminal 5 (`current_fly_script.py`):** Starts the main autonomy logic and decision-making brain.
+7.  **Terminal 6 (Manual):** To test with hand gestures, this terminal is used to launch the `hand_gesture_recognition_node.py` manually.
+
+## Current Status & Next Steps
+
+The project is currently in the **Hardware-in-the-Loop (HITL) validation phase**. The core software has been successfully developed and stress-tested in simulation. The current active work involves:
+
+1.  **Validating the Control Pipeline:** Integrating a **CubePilot Cube Orange+** flight controller with a **Raspberry Pi 4**. This involves sending commands from the ground station software and confirming they are correctly received and executed by the real hardware.
+2.  **Validating the Perception Pipeline:** Integrating the **Intel RealSense D435i** depth camera with the Raspberry Pi and successfully streaming real-time `PointCloud2` and infrared data to the ground station.
+
+The next major phase (**Phase 2b**) will be the integration of the validated electronics onto a 5-inch drone frame for physical flight testing.
