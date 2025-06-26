@@ -10,7 +10,7 @@ This repository contains the ROS 2 software stack for a compact, autonomous dron
 
 The core perception and control loop has been successfully validated in a software-in-the-loop (SITL) environment. The following demonstrations show the system in action:
 
-| Hand Gesture Control | Strobe Following & Obstacle Avoidance |
+| Hand Gesture Control | Strobe Following |
 | :---: | :---: |
 | ![Hand Gesture Control](./assets/Drone%20Hand%20Gesture%20Ros.gif) | ![Strobe Following](./assets/Drone%20Following%20Strobe%20Node%20Ros.gif) |
 
@@ -24,7 +24,7 @@ The core perception and control loop has been successfully validated in a softwa
 * **Real-Time Hand Gesture Control:** The drone is controlled by high-level commands generated from an AI-powered perception node. The system uses a debouncing algorithm, requiring a gesture to be held for several frames before a command is confirmed, preventing accidental actions. Implemented gestures include:
     * **Fist (`HOVER`):** Commands the drone to stop its current task and hold its position.
     * **Open Palm (`RESUME_STROBE_FOLLOW`):** Commands the drone to follow its primary mission objective (a moving target in simulation).
-    * **Pointing Finger (`GO_THROUGH_DOOR`):** Commands the drone to move forward.
+    * **Pointing Finger (`GO_THROUGH_DOOR`):** Commands the drone to move forward. *(This functionality will be upgraded to true 3D directional pointing upon integration of the depth camera)*.
 
 * **Dynamic Obstacle Avoidance via Potential Fields:** The drone uses a custom potential field algorithm for navigation. This method calculates a real-time trajectory based on two competing forces:
     * **Attractive Force:** A vector pulling the drone towards its current goal (e.g., a waypoint or a moving target).
