@@ -51,7 +51,7 @@ gnome-terminal --tab --title="Strobe Light Publisher" -- bash -c "cd $PROJECT_DI
 
 # Terminal 9: Interactive Hand Command Publisher (Keyboard Interface for Manual Control)
 # Allows a human operator to issue high-level commands via keyboard.
-gnome-terminal --tab --title="Interactive Hand Command" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./hand_command_publisher.py; exec bash"
+#gnome-terminal --tab --title="Interactive Hand Command" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./hand_command_publisher.py; exec bash"
 
 # Terminal 10: Hand Gesture Recognition Node (The Operator Interface - now controls RealSense directly)
 # This node directly manages the RealSense camera and publishes all camera-related ROS topics.
