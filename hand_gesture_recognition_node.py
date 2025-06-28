@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Header
-from geometry_msgs.msg import PointStamped, TransformStamped # Added TransformStamped
+from geometry_msgs.msg import PointStamped, TransformStamped
 from visualization_msgs.msg import Marker
 from std_msgs.msg import ColorRGBA
 from sensor_msgs.msg import PointCloud2, PointField
@@ -17,7 +17,7 @@ import datetime as dt
 import struct
 
 # TF2_ROS imports for static transforms
-from tf2_ros import StaticTransformBroadcaster # Added StaticTransformBroadcaster
+from tf2_ros import StaticTransformBroadcaster
 
 class HandGestureRecognitionNode(Node):
     def __init__(self):
@@ -34,9 +34,9 @@ class HandGestureRecognitionNode(Node):
 
         # Setup for OpenCV window display
         self.font = cv2.FONT_HERSHEY_SIMPLEX
-        self.fontScale = .5
+        self.fontScale = .7 # Slightly increased font scale for better visibility
         self.color = (0,150,255) # BGR format
-        self.thickness = 1
+        self.thickness = 2 # Slightly increased thickness
 
         # ====== RealSense Camera Setup ======
         self.realsense_ctx = rs.context()
@@ -56,8 +56,9 @@ class HandGestureRecognitionNode(Node):
         self.config = rs.config()
         self.background_removed_color = 153
 
-        self.stream_res_x = 640
-        self.stream_res_y = 480
+        # --- INCREASED RESOLUTION FOR CV2.IMSHOW ---
+        self.stream_res_x = 1280 # Changed from 640
+        self.stream_res_y = 720  # Changed from 480
         self.stream_fps = 30
 
         self.config.enable_device(self.device_serial)
@@ -234,29 +235,46 @@ class HandGestureRecognitionNode(Node):
                     self.publish_hand_marker(hand_pos_msg.point.x, hand_pos_msg.point.y, hand_pos_msg.point.z, hand_idx)
                     
                     fingers_up = []
-                    thumb_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP].x
-                    thumb_ip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_IP].x
-                    if thumb_tip < thumb_ip: fingers_up.append(1)
-                    else: fingers_up.append(0)
-                    
+                    # Check thumb
+                    # For right hand, thumb_tip.x < thumb_ip.x means thumb is open
+                    # For left hand, thumb_tip.x > thumb_ip.x means thumb is open
+                    # MediaPipe's multi_handedness[i].classification[0].label can be 'Right' or 'Left'
+                    hand_label = results.multi_handedness[hand_idx].classification[0].label
+                    if hand_label == 'Right':
+                        if hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP].x < hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_IP].x:
+                            fingers_up.append(1)
+                        else:
+                            fingers_up.append(0)
+                    else: # Left hand
+                        if hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP].x > hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_IP].x:
+                            fingers_up.append(1)
+                        else:
+                            fingers_up.append(0)
+
                     finger_tip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_TIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP, 
                                       self.mp_hands.HandLandmark.RING_FINGER_TIP, self.mp_hands.HandLandmark.PINKY_TIP]
                     finger_pip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_PIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP,
                                       self.mp_hands.HandLandmark.RING_FINGER_PIP, self.mp_hands.HandLandmark.PINKY_PIP]
 
-                    for i in range(4):
+                    for i in range(4): # Check other 4 fingers
                         if hand_landmarks.landmark[finger_tip_ids[i]].y < hand_landmarks.landmark[finger_pip_ids[i]].y:
                             fingers_up.append(1)
                         else: fingers_up.append(0)
                     
                     num_fingers = sum(fingers_up)
                     
-                    if num_fingers == 0: command = "HOVER"
-                    elif num_fingers == 1: command = "GO_THROUGH_DOOR"
-                    elif num_fingers == 5: command = "RESUME_STROBE_FOLLOW"
-                    else: command = "UNKNOWN_GESTURE"
+                    # --- UPDATED GESTURE MAPPING ---
+                    if num_fingers == 0: # Fist
+                        command = "LAND"
+                    elif num_fingers == 1: # Index finger pointing
+                        command = "MOVE_FORWARD"
+                    elif num_fingers == 5: # Open palm (high five)
+                        command = "HOVER"
+                    else:
+                        command = "UNKNOWN_GESTURE"
                     
                     cv2.putText(display_image, f"Distance: {mfk_distance_meters:.2f} m", (10, 30), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
+                    cv2.putText(display_image, f"Fingers Up: {num_fingers}", (10, 60), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
                 else: command = "NO_VALID_HAND_DEPTH" 
 
         else:
