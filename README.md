@@ -21,7 +21,7 @@ For a detailed view of the 3D hand tracking and gesture recognition with depth d
 
 * **On the left (Simulated 2D):** The "Hand Gesture Recognition" node processes a live video feed, using an AI model (MediaPipe) to classify hand poses into high-level flight commands. **(Note: This demonstration uses a standard 2D webcam as a stand-in for the final system's infrared sensor).**
 
-* **On the right:** The drone autonomously follows a moving target (the magenta sphere) while using its potential field algorithm to dynamically navigate the maze environment.
+* **On the right:** The drone autonomously follows a moving target (the magenta sphere).
 
 ---
 
@@ -42,17 +42,16 @@ For a detailed view of the 3D hand tracking and gesture recognition with depth d
 
 This project uses a **Remote Computing (or "Offboard Computing")** architecture to maximize the drone's agility and flight time while enabling powerful AI processing.
 
-1.  **On-Drone Hardware (The "Body"):** A lightweight Raspberry Pi 4 acts as a "video bridge." Its sole purpose is to stream sensor data from an Intel RealSense D435i depth camera over a low-latency wireless data link. (Note: For current development, the RealSense D435i is directly connected to the ground station VM).
-
-2.  **Ground Station (The "Brain"):** A powerful ground computer (Ubuntu VM) receives the sensor data and runs the entire ROS 2 autonomy stack, including the perception, navigation, and control nodes. It sends high-level flight commands back to the drone.
+1.  **On-Drone Hardware:** A lightweight **NVIDIA Orin Nano Developer Kit** acts as the on-board compute platform. Its purpose is to perform all real-time sensor processing, perception, navigation, and control directly on the drone, enabling **GPS-denied autonomous flight**.
+2.  **Ground Station:** A powerful ground computer (Ubuntu VM) currently serves as a development and visualization platform. While the ultimate goal is on-board autonomy, the ground station is used for initial testing, debugging, and visualization (e.g., RViz).
 
 ## Software Node Breakdown
 
 This system is composed of several custom ROS 2 nodes that work in concert.
 
-* **`current_fly_script.py` (The Brain):** The central command node. It subscribes to all sensor and command inputs and is responsible for making high-level decisions. It implements the core Potential Field algorithm, using the simplified threat data from the perception node to calculate repulsive forces. It now also subscribes to `/hand_commands` to directly control the drone based on gestures.
+* **`current_fly_script.py`:** The central command node. It subscribes to all sensor and command inputs and is responsible for making high-level decisions. It implements the core Potential Field algorithm, using the simplified threat data from the perception node to calculate repulsive forces. It now also subscribes to `/hand_commands` to directly control the drone based on gestures.
 
-* **`hand_gesture_recognition_node.py` (The Operator Interface & RealSense Driver):** This node has been significantly upgraded. It now directly interfaces with the Intel RealSense D435i camera using `pyrealsense2`. It performs the following critical functions:
+* **`hand_gesture_recognition_node.py`:** This node has been significantly upgraded. It now directly interfaces with the Intel RealSense D435i camera using `pyrealsense2`. It performs the following critical functions:
     * Acquires synchronized color, depth, and IMU frames from the RealSense.
     * Applies a decimation filter to the depth data for performance optimization.
     * Uses OpenCV and MediaPipe to detect hand landmarks on the color image.
@@ -63,19 +62,19 @@ This system is composed of several custom ROS 2 nodes that work in concert.
     * Publishes static TF transforms for the camera's internal frames (`camera_link` to `camera_depth_optical_frame`, `camera_depth_optical_frame` to `camera_color_optical_frame`, `camera_depth_optical_frame` to `camera_imu_optical_frame`).
     * Displays a live, annotated video feed using `cv2.imshow()` for real-time visual feedback.
 
-* **`obstacle_perception_node.py` (The Eyes):** This node subscribes to the real-time `PointCloud2` data published by `hand_gesture_recognition_node.py` (`/camera/camera/depth/color/points`). It processes this complex 3D data to find the most immediate threat to the drone and publishes the stable 3D coordinates of that threat to the `/detected_obstacle` topic.
+* **`obstacle_perception_node.py`:** This node subscribes to the real-time `PointCloud2` data published by `hand_gesture_recognition_node.py` (`/camera/camera/depth/color/points`). It processes this complex 3D data to find the most immediate threat to the drone and publishes the stable 3D coordinates of that threat to the `/detected_obstacle` topic.
 
-* **`mock_px4.py` (Simulated Flight Controller):** In the simulation, this node mimics a real PX4 flight controller. It receives `TrajectorySetpoint` messages and publishes the drone's changing position and status. This is replaced by the real Cube Orange+ in the hardware phase.
+* **`mock_px4.py`:** In the simulation, this node mimics a real PX4 flight controller. It receives `TrajectorySetpoint` messages and publishes the drone's changing position and status. This is replaced by the real Cube Orange+ in the hardware phase.
 
-* **`px4_odometry_to_tf_publisher.py` (Odometry to TF Bridge):** This node subscribes to the drone's mock odometry data (`/fmu/out/vehicle_odometry`) and publishes the dynamic `odom` to `base_link` TF transform, allowing RViz to visualize the drone's movement.
+* **`px4_odometry_to_tf_publisher.py`:** This node subscribes to the drone's mock odometry data (`/fmu/out/vehicle_odometry`) and publishes the dynamic `odom` to `base_link` TF transform, allowing RViz to visualize the drone's movement.
 
-* **`static_transform_publisher` (External TF Publisher):** A ROS 2 utility used in the `run_all.sh` script to publish the static transform from `base_link` (drone body) to `camera_link` (camera base frame).
+* **`static_transform_publisher`:** A ROS 2 utility used in the `run_all.sh` script to publish the static transform from `base_link` (drone body) to `camera_link` (camera base frame).
 
-* **`strobe_light_publisher.py` (The Target):** This node simulates the moving target that the drone is tasked with following. It publishes the 3D position of the strobe light.
+* **`strobe_light_publisher.py`:** This node simulates the moving target that the drone is tasked with following. It publishes the 3D position of the strobe light.
 
-* **`hand_command_publisher.py` (The Operator Keyboard Interface - *Now Optional*):** This node serves as a manual override interface, allowing a human operator to issue high-level commands like `MOVE_FORWARD`, `START_MAZE_TEST`, and `RESUME_STROBE_FOLLOW` via the keyboard. **For hand gesture control, this node can be commented out in `run_all.sh`.**
+* **`hand_command_publisher.py`:** This node serves as a manual override interface, allowing a human operator to issue high-level commands like `MOVE_FORWARD`, `START_MAZE_TEST`, and `RESUME_STROBE_FOLLOW` via the keyboard. **For hand gesture control, this node can be commented out in `run_all.sh`.**
 
-* **`simulated_depth_sensor_publisher.py` (Simulated World - DEPRECATED):** This node previously created the virtual maze environment by publishing simulated `PointCloud2` data. It is now commented out in `run_all.sh` as the Intel RealSense D435i provides real-time depth data.
+* **`simulated_depth_sensor_publisher.py`:** This node previously created the virtual maze environment by publishing simulated `PointCloud2` data. It is now commented out in `run_all.sh` as the Intel RealSense D435i provides real-time depth data.
 
 ## How to Run (RealSense Integrated Simulation)
 
@@ -162,6 +161,6 @@ The project is currently in the **Hardware-in-the-Loop (HITL) validation phase**
 **Future Development Phases:**
 
 * **Hardware Integration (Phase 2b):**
-    * **Control Pipeline Validation:** Integrate the CubePilot Cube Orange+ flight controller with the Raspberry Pi 4.
-    * **Perception Pipeline Validation:** Stream real-time `PointCloud2` and infrared data from the Intel RealSense D435i to the ground station via the Raspberry Pi.
-    * **Physical Flight Testing:** Integrate all validated electronics onto a 5-inch drone frame for physical flight testing in a controlled environment.
+    * **Control Pipeline Validation:** Integrate the CubePilot Cube Orange+ flight controller with the **NVIDIA Orin Nano Developer Kit**.
+    * **Perception Pipeline Validation:** Stream real-time `PointCloud2` and infrared data from the Intel RealSense D435i to the **NVIDIA Orin Nano Developer Kit** for on-board processing.
+    * **Physical Flight Testing:** Integrate all validated electronics onto a 5-inch drone frame for physical flight testing in a controlled environment, focusing on **GPS-denied autonomous flight capabilities**.
