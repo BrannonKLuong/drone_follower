@@ -36,14 +36,14 @@ gnome-terminal --tab --title="Drone Brain" -- bash -c "cd $PROJECT_DIR && source
 # Publishes the 'odom' to 'base_link' transform for RViz visualization of drone movement.
 gnome-terminal --tab --title="Odometry TF" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./px4_odometry_to_tf_publisher.py; exec bash"
 
-# Terminal 7: Static TF from base_link to camera_color_optical_frame
-# This connects the drone's 'base_link' frame to the camera's 'camera_color_optical_frame' for RViz.
-# This transform is crucial for visualizing the hand position and point cloud correctly relative to the drone.
+# Terminal 7: Static TF from base_link to camera_link
+# This connects the drone's 'base_link' frame to the camera's 'camera_link' frame.
+# Adjust these values based on your camera's physical mounting on the drone.
 # Translation (x y z): 0.1m forward, 0.0m side, 0.05m up relative to base_link.
 # Rotation (roll_rad pitch_rad yaw_rad): -1.5707 (-90 deg roll), -0.17 (-10 deg pitch), 0.0 (0 deg yaw).
-# This configuration aligns the camera's Z-axis (forward) with the drone's X-axis (forward),
-# while adding a 10-degree downward pitch, and accounts for the 90-degree yaw correction.
-gnome-terminal --tab --title="Camera Static TF" -- bash -c "source /opt/ros/humble/setup.bash && ros2 run tf2_ros static_transform_publisher 0.1 0.0 0.05 -1.5707 -0.17 0.0 base_link camera_color_optical_frame; exec bash"
+# This configuration assumes base_link X is forward, Y is left, Z is up.
+# And camera_link X is forward, Y is left, Z is up (common for camera body frame).
+gnome-terminal --tab --title="Camera Static TF" -- bash -c "source /opt/ros/humble/setup.bash && ros2 run tf2_ros static_transform_publisher 0.1 0.0 0.05 -1.5707 -0.17 0.0 base_link camera_link; exec bash"
 
 # Terminal 8: Strobe Light Publisher (The Moving Target)
 # Simulates the target the drone will follow.
