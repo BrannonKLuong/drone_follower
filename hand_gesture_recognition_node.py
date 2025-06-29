@@ -101,6 +101,13 @@ class HandGestureRecognitionNode(Node):
         self.hand_pointing_publisher = self.create_publisher(Vector3Stamped, '/hand_pointing_vector', 10)
         self.pointing_arrow_marker_publisher = self.create_publisher(Marker, '/hand_pointing_arrow', 10)
 
+        # --- Smoothing buffer for pointing vector ---
+        self.pointing_vector_buffer = []
+        self.smoothing_window_size = 5 # Average over the last 5 frames
+
+        # --- Debouncing for LAND command ---
+        self.land_detection_count = 0
+        self.land_debounce_frames = 10 # Number of consecutive frames to detect fist before sending LAND
 
         self.last_accel_data = None
         self.last_gyro_data = None
@@ -113,6 +120,9 @@ class HandGestureRecognitionNode(Node):
 
         # Publish static camera internal TFs once
         self.publish_static_camera_tfs()
+
+        # Flag to ensure window is only created/resized once
+        self.window_initialized = False 
 
         # Timer to get frames and process
         self.timer = self.create_timer(1.0 / self.stream_fps, self.timer_callback)
@@ -199,17 +209,26 @@ class HandGestureRecognitionNode(Node):
         command = "NO_HAND"
         display_image = color_image_flipped.copy()
 
-        # Initialize pointing vector to zero if no hand or not pointing
+        # Initialize pointing vector message for the current frame
         pointing_vector_msg = Vector3Stamped()
         pointing_vector_msg.header.stamp = self.get_clock().now().to_msg()
         pointing_vector_msg.header.frame_id = "camera_color_optical_frame"
         pointing_vector_msg.vector.x = 0.0
         pointing_vector_msg.vector.y = 0.0
         pointing_vector_msg.vector.z = 0.0
-
-        pointing_direction_text = "N/A" # Initialize text for display
+        
+        current_raw_pointing_vector = np.array([0.0, 0.0, 0.0]) # Will be updated if hand detected
+        
+        pointing_direction_text = "N/A"
         arrow_start_2d = None
         arrow_end_2d = None
+
+        # --- Initialize/Resize OpenCV window once ---
+        if not self.window_initialized:
+            cv2.namedWindow('Hand Gesture Recognition', cv2.WINDOW_NORMAL) # Make window resizable
+            # Set initial size to match stream resolution or larger if desired
+            cv2.resizeWindow('Hand Gesture Recognition', self.stream_res_x, self.stream_res_y) 
+            self.window_initialized = True
 
 
         if results.multi_hand_landmarks:
@@ -261,7 +280,7 @@ class HandGestureRecognitionNode(Node):
                     finger_tip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_TIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP, 
                                       self.mp_hands.HandLandmark.RING_FINGER_TIP, self.mp_hands.HandLandmark.PINKY_TIP]
                     finger_pip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_PIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP,
-                                      self.mp_hands.HandLandmark.RING_FINGER_TIP, self.mp_hands.HandLandmark.PINKY_PIP] # Corrected RING_FINGER_PIP
+                                      self.mp_hands.HandLandmark.RING_FINGER_PIP, self.mp_hands.HandLandmark.PINKY_PIP]
 
                     for i in range(4):
                         if hand_landmarks.landmark[finger_tip_ids[i]].y < hand_landmarks.landmark[finger_pip_ids[i]].y:
@@ -271,25 +290,27 @@ class HandGestureRecognitionNode(Node):
                     num_fingers = sum(fingers_up)
                     
                     if num_fingers == 0: # Fist
-                        command = "LAND"
-                    elif num_fingers == 2: # --- CHANGED: MOVE_FORWARD now requires 2 fingers ---
+                        # Debounce LAND command
+                        self.land_detection_count += 1
+                        if self.land_detection_count >= self.land_debounce_frames:
+                            command = "LAND"
+                            # Reset counter after command is issued to prevent continuous landing
+                            self.land_detection_count = 0 
+                        else:
+                            command = "DETECTING_LAND" # Indicate that land is being detected
+                    elif num_fingers == 2: # Two fingers (e.g., index and middle) for MOVE_FORWARD
+                        # Reset land detection if another gesture is made
+                        self.land_detection_count = 0
                         command = "MOVE_FORWARD"
-                        # --- Calculate and Publish 3D Pointing Vector using WRIST and INDEX_FINGER_MCP ---
+                        # --- Calculate 3D Pointing Vector using WRIST and INDEX_FINGER_MCP ---
                         wrist_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
                         index_mcp_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_MCP]
 
-                        # Convert normalized 2D coords to pixel coords
-                        wrist_x_pixel_norm = wrist_2d_norm.x
-                        wrist_y_pixel_norm = wrist_2d_norm.y
-                        index_mcp_x_pixel_norm = index_mcp_2d_norm.x
-                        index_mcp_y_pixel_norm = index_mcp_2d_norm.y
-
-                        # Get depths for wrist and index_mcp
-                        # Need to get pixel coordinates for depth lookup
-                        wrist_depth_x_pixel = int(wrist_x_pixel_norm * decimated_width)
-                        wrist_depth_y_pixel = int(wrist_y_pixel_norm * decimated_height)
-                        index_mcp_depth_x_pixel = int(index_mcp_x_pixel_norm * decimated_width)
-                        index_mcp_depth_y_pixel = int(index_mcp_y_pixel_norm * decimated_height)
+                        # Convert normalized 2D coords to pixel coords for depth lookup
+                        wrist_depth_x_pixel = int(wrist_2d_norm.x * decimated_width)
+                        wrist_depth_y_pixel = int(wrist_2d_norm.y * decimated_height)
+                        index_mcp_depth_x_pixel = int(index_mcp_2d_norm.x * decimated_width)
+                        index_mcp_depth_y_pixel = int(index_mcp_2d_norm.y * decimated_height)
 
                         # Clip to bounds for depth lookup
                         wrist_depth_x_pixel = np.clip(wrist_depth_x_pixel, 0, decimated_width - 1)
@@ -314,40 +335,52 @@ class HandGestureRecognitionNode(Node):
                             vec_y = index_mcp_3d_vec[1] - wrist_3d_vec[1]
                             vec_z = index_mcp_3d_vec[2] - wrist_3d_vec[2]
 
-                            # Normalize the vector
+                            # Normalize the vector for raw calculation
                             magnitude = math.sqrt(vec_x**2 + vec_y**2 + vec_z**2)
                             if magnitude > 1e-6:
-                                pointing_vector_msg.vector.x = vec_x / magnitude
-                                pointing_vector_msg.vector.y = vec_y / magnitude
-                                pointing_vector_msg.vector.z = vec_z / magnitude
+                                current_raw_pointing_vector = np.array([vec_x / magnitude, vec_y / magnitude, vec_z / magnitude])
+                            else:
+                                current_raw_pointing_vector = np.array([0.0, 0.0, 0.0]) # Default to zero if magnitude is too small
                             
+                            # --- Apply Smoothing ---
+                            self.pointing_vector_buffer.append(current_raw_pointing_vector)
+                            if len(self.pointing_vector_buffer) > self.smoothing_window_size:
+                                self.pointing_vector_buffer.pop(0) # Remove oldest
+
+                            # Calculate averaged vector
+                            averaged_vector = np.mean(self.pointing_vector_buffer, axis=0)
+                            # Re-normalize averaged vector
+                            avg_magnitude = np.linalg.norm(averaged_vector)
+                            if avg_magnitude > 1e-6:
+                                averaged_vector = averaged_vector / avg_magnitude
+                            else:
+                                averaged_vector = np.array([0.0, 0.0, 0.0])
+
+                            pointing_vector_msg.vector.x = averaged_vector[0]
+                            pointing_vector_msg.vector.y = averaged_vector[1]
+                            pointing_vector_msg.vector.z = averaged_vector[2]
+
                             self.hand_pointing_publisher.publish(pointing_vector_msg)
-                            # Use wrist_3d as the origin for the pointing arrow marker
                             self.publish_pointing_arrow_marker(Point(x=wrist_3d_vec[0], y=wrist_3d_vec[1], z=wrist_3d_vec[2]), pointing_vector_msg.vector, hand_idx)
 
                             # --- NEW: Visualize 2D projection of forearm vector on cv2.imshow ---
-                            # Project the 3D forearm vector's endpoint back to 2D for visualization
-                            # Start point for 2D arrow is wrist_2d_norm (normalized coordinates)
                             arrow_start_2d = (int(wrist_2d_norm.x * color_image_flipped.shape[1]), int(wrist_2d_norm.y * color_image_flipped.shape[0]))
                             
-                            # Calculate a point along the normalized vector for the arrow end
-                            # Project a point 0.1m along the vector from the wrist_3d_vec
+                            # Project a point 0.1m along the AVERAGED vector from wrist_3d_vec
                             arrow_end_3d_for_proj = [
-                                wrist_3d_vec[0] + pointing_vector_msg.vector.x * 0.1,
-                                wrist_3d_vec[1] + pointing_vector_msg.vector.y * 0.1,
-                                wrist_3d_vec[2] + pointing_vector_msg.vector.z * 0.1
+                                wrist_3d_vec[0] + averaged_vector[0] * 0.1,
+                                wrist_3d_vec[1] + averaged_vector[1] * 0.1,
+                                wrist_3d_vec[2] + averaged_vector[2] * 0.1
                             ]
                             
-                            # Project this 3D point back to 2D pixel coordinates for the color image
                             arrow_end_2d_pixel = rs.rs2_project_point_to_pixel(self.color_intrinsics, arrow_end_3d_for_proj)
                             arrow_end_2d = (int(arrow_end_2d_pixel[0]), int(arrow_end_2d_pixel[1]))
 
                             # --- Calculate and Display Direction (Left/Right/Up/Down) ---
-                            # In camera_color_optical_frame: X is right, Y is down, Z is forward
-                            vx, vy, vz = pointing_vector_msg.vector.x, pointing_vector_msg.vector.y, pointing_vector_msg.vector.z
+                            # Use the AVERAGED vector for display calculations
+                            vx, vy, vz = averaged_vector[0], averaged_vector[1], averaged_vector[2]
 
                             # Horizontal angle (yaw) in XZ plane relative to Z-axis (forward)
-                            # Use a small epsilon to avoid division by zero if vz is near zero
                             horizontal_angle_rad = math.atan2(vx, vz if abs(vz) > 1e-6 else (1e-6 if vx >= 0 else -1e-6))
                             horizontal_angle_deg = math.degrees(horizontal_angle_rad)
 
@@ -378,12 +411,16 @@ class HandGestureRecognitionNode(Node):
                             pointing_direction_text = "Depth Error"
 
                     elif num_fingers == 5: # Open palm (high five)
+                        # Reset land detection if another gesture is made
+                        self.land_detection_count = 0
                         command = "HOVER"
                     else:
+                        # Reset land detection if an unknown gesture is made
+                        self.land_detection_count = 0
                         command = "UNKNOWN_GESTURE"
                     
                     cv2.putText(display_image, f"Distance: {wrist_distance_meters:.2f} m", (10, 30), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
-                    cv2.putText(display_image, f"Fingers Up: {num_fingers}", (10, 60), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
+                    cv2.putText(display_image, f"Fingers Up: {num_fingers}", (10, 60), self.font, self.fontScale, self.color, cv2.LINE_AA) # No thickness for this line
                     cv2.putText(display_image, f"Pointing: {pointing_direction_text}", (10, 90), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
                 else:
                     command = "NO_VALID_HAND_DEPTH" 
@@ -391,14 +428,19 @@ class HandGestureRecognitionNode(Node):
 
         else:
             command = "NO_HAND"
+            self.land_detection_count = 0 # Reset land detection if no hand
             cv2.putText(display_image, "No Hands Detected", (10, 30), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
             cv2.putText(display_image, f"Pointing: {pointing_direction_text}", (10, 90), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
 
         # Always publish the pointing vector message, even if it's zero (no hand/not pointing)
+        # Note: If no hand is detected, the vector will be (0,0,0) due to initialization.
         self.hand_pointing_publisher.publish(pointing_vector_msg)
 
         # --- NEW: Draw 2D pointing arrow on display_image ---
         if arrow_start_2d and arrow_end_2d:
+            # Ensure arrow coordinates are within image bounds
+            arrow_start_2d = (np.clip(arrow_start_2d[0], 0, display_image.shape[1]-1), np.clip(arrow_start_2d[1], 0, display_image.shape[0]-1))
+            arrow_end_2d = (np.clip(arrow_end_2d[0], 0, display_image.shape[1]-1), np.clip(arrow_end_2d[1], 0, display_image.shape[0]-1))
             cv2.arrowedLine(display_image, arrow_start_2d, arrow_end_2d, (0, 255, 0), 3) # Green arrow
 
         command_msg = String()
