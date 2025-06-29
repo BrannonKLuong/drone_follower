@@ -11,7 +11,7 @@ The core control loop and simulated perception have been successfully validated 
 ### Hand Gesture Control (RealSense 3D Depth)
 
 For a detailed view of the 3D hand tracking and gesture recognition with depth data, see the GIF below.
-![Hand Gesture Recognition with Depth](./assets/Depth%Directional%Hand%Commands.gif)
+![Hand Gesture Recognition with Depth](./assets/Depth%20Directional%20Hand%20Commands.gif)
 
 ### Other Demonstrations
 
