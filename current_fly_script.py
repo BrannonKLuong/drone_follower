@@ -1,11 +1,17 @@
 import rclpy
 from rclpy.node import Node
-from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleLocalPosition, VehicleStatus, TrajectorySetpoint, VehicleOdometry # Added VehicleOdometry
-from geometry_msgs.msg import PoseStamped, Point
+from px4_msgs.msg import OffboardControlMode, VehicleCommand, VehicleLocalPosition, VehicleStatus, TrajectorySetpoint, VehicleOdometry
+from geometry_msgs.msg import Point, Vector3Stamped
 from std_msgs.msg import String
 import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 import math
+
+# TF2 imports
+import tf2_ros
+from tf2_ros import TransformException
+from tf2_geometry_msgs import do_transform_vector3 # Corrected import for do_transform_vector3
+from geometry_msgs.msg import TransformStamped # For debugging TF lookups
 
 class DroneCommander(Node):
     def __init__(self):
@@ -48,11 +54,14 @@ class DroneCommander(Node):
         self.vehicle_status_sub = self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, self.px4_mock_qos_profile)
         self.detected_obstacle_sub = self.create_subscription(Point, '/detected_obstacle', self.detected_obstacle_callback, 10)
         
-        # --- NEW: Subscribe to hand commands ---
         self.hand_command_sub = self.create_subscription(String, '/hand_commands', self.hand_command_callback, 10)
-        
-        # --- NEW: Subscribe to VehicleOdometry for drone's yaw ---
         self.vehicle_odometry_sub = self.create_subscription(VehicleOdometry, '/fmu/out/vehicle_odometry', self.vehicle_odometry_callback, self.px4_mock_qos_profile)
+
+        self.hand_pointing_vector_sub = self.create_subscription(Vector3Stamped, '/hand_pointing_vector', self.hand_pointing_vector_callback, 10)
+        self.last_pointing_vector_stamped = None
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
 
         # State variables
@@ -67,11 +76,10 @@ class DroneCommander(Node):
         self.last_obstacle_timestamp = self.get_clock().now()
         self.obstacle_memory_duration = 0.5
         
-        self.current_drone_yaw = 0.0 # To store the drone's current yaw from odometry
-        self.current_hand_command = "NO_HAND" # To store the latest hand command
+        self.current_drone_yaw = 0.0
+        self.current_hand_command = "NO_HAND"
 
-        # --- NEW: Control mode state ---
-        self.control_mode = "MISSION" # Can be "MISSION" or "HAND_CONTROL" or "LANDING"
+        self.control_mode = "MISSION"
 
         self.timer = self.create_timer(0.1, self.timer_callback)
         
@@ -83,29 +91,6 @@ class DroneCommander(Node):
 
     def vehicle_odometry_callback(self, msg: VehicleOdometry):
         """Callback to get the drone's current orientation (yaw)."""
-        # PX4 quaternion (w, x, y, z) needs to be converted to Euler yaw
-        # For simplicity, assuming yaw is the primary rotation for horizontal movement
-        # Quaternion to Euler (yaw only, assuming roll and pitch are near zero for level flight)
-        # q = [w, x, y, z]
-        # yaw = atan2(2*(q.x*q.y + q.w*q.z), q.w*q.w + q.x*q.x - q.y*q.y - q.z*q.z)
-        # Note: PX4 uses NED, ROS/RViz uses ENU. Odometry msg.q is NED to body/FRD.
-        # Conversion from NED to ENU for orientation is complex (e.g., rotating by 180 around Z, then 90 around X).
-        # For simple forward movement based on yaw, we can directly use the yaw derived from the quaternion
-        # assuming the drone is mostly level.
-        # A more robust solution would involve a full NED to ENU quaternion conversion.
-        
-        # For now, let's convert PX4's NED quaternion to a yaw that makes sense for ENU forward.
-        # PX4's quaternion (w,x,y,z) for NED to FRD.
-        # To get ENU quaternion (w,x,y,z) from NED (w,x,y,z)
-        # q_enu = [w, -y, -x, z] (simplified for common cases, verify for full 3D)
-        
-        # Using the provided mock_px4.py, the yaw is directly put into the quaternion's Z and W components
-        # for a flat rotation. So we can extract it directly.
-        # q[0]=w, q[1]=x, q[2]=y, q[3]=z
-        
-        # Convert quaternion to yaw (from https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles)
-        # This is for a standard ROS quaternion (x, y, z, w)
-        # Your msg.q is (w, x, y, z)
         q_w = msg.q[0]
         q_x = msg.q[1]
         q_y = msg.q[2]
@@ -114,25 +99,21 @@ class DroneCommander(Node):
         siny_cosp = 2 * (q_w * q_z + q_x * q_y)
         cosy_cosp = 1 - 2 * (q_y * q_y + q_z * q_z)
         self.current_drone_yaw = math.atan2(siny_cosp, cosy_cosp)
-        # The mock_px4.py already handles the yaw in a way that aligns with ENU for horizontal movement.
-        # So, the extracted yaw should be directly usable for ENU forward movement.
-
 
     def hand_command_callback(self, msg: String):
         """Callback for hand gesture commands."""
         self.current_hand_command = msg.data
         self.get_logger().info(f"Received hand command: {self.current_hand_command}")
-        # If a hand command is received, switch to hand control mode
         if self.current_hand_command in ["HOVER", "MOVE_FORWARD", "LAND"]:
             self.control_mode = "HAND_CONTROL"
-        elif self.current_hand_command == "RESUME_STROBE_FOLLOW": # If you want to keep this command
+        elif self.current_hand_command == "RESUME_STROBE_FOLLOW":
             self.control_mode = "MISSION"
         elif self.current_hand_command == "NO_HAND":
-            # If no hand is detected for a period, revert to mission or hover
-            # For now, let's keep it in hand control until another command is given.
-            # Or you could add a timeout here to revert to HOVER if NO_HAND persists.
             pass
 
+    def hand_pointing_vector_callback(self, msg: Vector3Stamped):
+        """Callback for the 3D pointing vector from the hand."""
+        self.last_pointing_vector_stamped = msg
 
     def publish_offboard_control_mode(self):
         msg = OffboardControlMode(); msg.position = True; msg.timestamp = self.get_clock().now().nanoseconds // 1000
@@ -144,19 +125,19 @@ class DroneCommander(Node):
         msg.target_system = 1; msg.target_component = 1; msg.source_system = 1; msg.source_component = 1; msg.from_external = True
         self.publisher_vehicle_command.publish(msg)
 
-    def publish_trajectory_setpoint(self, x, y, z, yaw=float('nan')): # Added yaw parameter
+    def publish_trajectory_setpoint(self, x, y, z, yaw=float('nan')):
         msg = TrajectorySetpoint(); msg.timestamp = self.get_clock().now().nanoseconds // 1000
         msg.position[0] = y; msg.position[1] = x; msg.position[2] = -z
-        msg.yaw = yaw # Set yaw in setpoint
+        msg.yaw = yaw
         self.trajectory_setpoint_pub.publish(msg)
 
     def arm(self): self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
     def disarm(self): self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0)
     def land(self):
-        if not self.landing_initiated: # Prevent multiple land commands
+        if not self.landing_initiated:
             self.get_logger().info("Sending LAND command."); self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
             self.landing_initiated = True
-            self.control_mode = "LANDING" # Set control mode to landing
+            self.control_mode = "LANDING"
 
     def timer_callback(self):
         if self.mission_completed: return
@@ -166,21 +147,19 @@ class DroneCommander(Node):
         current_y_enu = self.local_position.x
         current_z_enu = -self.local_position.z
         
-        # Initial arming and offboard mode setup
         if self.offboard_setpoint_counter < 120:
             self.offboard_setpoint_counter += 1
             if self.offboard_setpoint_counter == 100: self.arm()
             elif self.offboard_setpoint_counter == 120: self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
-            # During initial setup, just send current position as setpoint to keep it stable
             self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
             return
 
         if self.landing_initiated:
-            if current_z_enu < 0.2: # If landed
+            if current_z_enu < 0.2:
                 self.disarm()
                 self.mission_completed = True
                 self.get_logger().info("Drone landed and disarmed. Shutting down.")
-                time.sleep(1) # Give time for message to send
+                time.sleep(1)
                 self.destroy_node()
                 rclpy.shutdown()
             return
@@ -190,39 +169,67 @@ class DroneCommander(Node):
             return
 
         target_x, target_y, target_z = current_x_enu, current_y_enu, self.hover_altitude
-        goal_is_set = False # Flag to indicate if a specific mission goal is active
+        goal_is_set = False
 
-        # Handle control based on current mode
         if self.control_mode == "HAND_CONTROL":
             if self.current_hand_command == "HOVER":
-                # Stay at current position and hover altitude
                 target_x = current_x_enu
                 target_y = current_y_enu
                 target_z = self.hover_altitude
                 self.get_logger().debug(f"Hand Command: HOVER to ({target_x:.2f}, {target_y:.2f}, {target_z:.2f})")
                 self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
-                return # Skip mission logic if in hand control
+                return
 
             elif self.current_hand_command == "MOVE_FORWARD":
-                # Move forward based on current yaw
-                # Calculate target point 1 meter ahead in the direction of current yaw
-                move_distance = 0.5 # meters to move per command cycle
-                target_x = current_x_enu + move_distance * math.cos(self.current_drone_yaw)
-                target_y = current_y_enu + move_distance * math.sin(self.current_drone_yaw)
-                target_z = self.hover_altitude # Maintain altitude
-                self.get_logger().debug(f"Hand Command: MOVE_FORWARD to ({target_x:.2f}, {target_y:.2f}, {target_z:.2f}) with yaw {self.current_drone_yaw:.2f}")
-                self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
-                return # Skip mission logic if in hand control
+                if self.last_pointing_vector_stamped:
+                    try:
+                        # Lookup transform at the latest available time (rclpy.time.Time())
+                        # This helps avoid "extrapolation into the future" errors
+                        transform = self.tf_buffer.lookup_transform(
+                            'odom',
+                            self.last_pointing_vector_stamped.header.frame_id,
+                            rclpy.time.Time(), # Use latest available transform
+                            rclpy.duration.Duration(seconds=0.1)
+                        )
+
+                        # Correctly pass the Vector3Stamped message to do_transform_vector3
+                        transformed_vector_stamped = do_transform_vector3(self.last_pointing_vector_stamped, transform)
+                        
+                        # Access the transformed vector components
+                        norm_x = transformed_vector_stamped.vector.x
+                        norm_y = transformed_vector_stamped.vector.y
+                        norm_z = transformed_vector_stamped.vector.z
+
+                        # Re-normalize just in case, though do_transform_vector3 should preserve magnitude for unit vectors
+                        mag = math.sqrt(norm_x**2 + norm_y**2 + norm_z**2)
+                        if mag > 1e-6:
+                            norm_x /= mag
+                            norm_y /= mag
+                            norm_z /= mag
+                        else:
+                            norm_x, norm_y, norm_z = 0.0, 0.0, 0.0
+
+                        move_distance_per_step = 0.5
+                        target_x = current_x_enu + norm_x * move_distance_per_step
+                        target_y = current_y_enu + norm_y * move_distance_per_step
+                        target_z = current_z_enu + norm_z * move_distance_per_step
+
+                        target_z = max(0.2, target_z)
+
+                        self.get_logger().debug(f"Hand Command: MOVE_FORWARD (3D Pointing) to ({target_x:.2f}, {target_y:.2f}, {target_z:.2f})")
+                        self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
+                    except TransformException as ex:
+                        self.get_logger().warn(f"Could not transform pointing vector: {ex}")
+                        self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
+                else:
+                    self.get_logger().warn("MOVE_FORWARD command received but no pointing vector available. Hovering.")
+                    self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
+                return
 
             elif self.current_hand_command == "LAND":
                 self.land()
-                return # Land command takes precedence
+                return
 
-            # If hand command is "NO_HAND" or "UNKNOWN_GESTURE" in HAND_CONTROL mode,
-            # drone will just hover at its last commanded position/altitude
-            # unless a timeout mechanism is added.
-
-        # If not in hand control, proceed with mission logic
         if self.control_mode == "MISSION":
             if self.test_scenario_active:
                 if self.current_waypoint_index < len(self.static_waypoints):
@@ -234,7 +241,7 @@ class DroneCommander(Node):
                         self.current_waypoint_index += 1
                 else:
                     self.land()
-                    return # Mission completed, initiate landing
+                    return
 
             attractive_vec_x = (goal_x - current_x_enu) * self.attraction_strength
             attractive_vec_y = (goal_y - current_y_enu) * self.attraction_strength
@@ -270,7 +277,7 @@ class DroneCommander(Node):
             target_x = current_x_enu + norm_final_vec_x * self.movement_speed
             target_y = current_y_enu + norm_final_vec_y * self.movement_speed
             target_z = goal_z if goal_is_set else self.hover_altitude
-            self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw) # Maintain current yaw
+            self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
 
 def main(args=None):
     rclpy.init(args=args)
