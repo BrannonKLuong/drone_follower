@@ -195,26 +195,37 @@ class DroneCommander(Node):
                         # Correctly pass the Vector3Stamped message to do_transform_vector3
                         transformed_vector_stamped = do_transform_vector3(self.last_pointing_vector_stamped, transform)
                         
-                        # Access the transformed vector components
-                        norm_x = transformed_vector_stamped.vector.x
-                        norm_y = transformed_vector_stamped.vector.y
-                        norm_z = transformed_vector_stamped.vector.z
+                        # Get the pointing vector components in the 'odom' (ENU) frame
+                        pointing_x_odom = transformed_vector_stamped.vector.x
+                        pointing_y_odom = transformed_vector_stamped.vector.y
+                        pointing_z_odom = transformed_vector_stamped.vector.z
 
-                        # Re-normalize just in case, though do_transform_vector3 should preserve magnitude for unit vectors
-                        mag = math.sqrt(norm_x**2 + norm_y**2 + norm_z**2)
-                        if mag > 1e-6:
-                            norm_x /= mag
-                            norm_y /= mag
-                            norm_z /= mag
+                        # --- NEW: Restrict horizontal movement to only world X-axis ---
+                        # Force no movement along world Y-axis (North/South).
+                        desired_horizontal_x = pointing_x_odom
+                        desired_horizontal_y = 0.0
+                        
+                        # Normalize the horizontal component for consistent speed
+                        horizontal_magnitude = math.sqrt(desired_horizontal_x**2 + desired_horizontal_y**2)
+                        if horizontal_magnitude > 1e-6:
+                            desired_horizontal_x /= horizontal_magnitude
+                            desired_horizontal_y /= horizontal_magnitude
                         else:
-                            norm_x, norm_y, norm_z = 0.0, 0.0, 0.0
+                            desired_horizontal_x = 0.0
+                            desired_horizontal_y = 0.0
 
-                        move_distance_per_step = 0.5
-                        target_x = current_x_enu + norm_x * move_distance_per_step
-                        target_y = current_y_enu + norm_y * move_distance_per_step
-                        target_z = current_z_enu + norm_z * move_distance_per_step
+                        # Vertical movement directly from pointing vector's Z component
+                        desired_vertical_z = pointing_z_odom
 
-                        target_z = max(0.2, target_z)
+                        move_distance_per_step = 0.5 # Adjust this value as needed for speed
+
+                        target_x = current_x_enu + desired_horizontal_x * move_distance_per_step
+                        target_y = current_y_enu + desired_horizontal_y * move_distance_per_step # This will now effectively be current_y_enu
+                        target_z = current_z_enu + desired_vertical_z * move_distance_per_step
+
+                        # Safety check for minimum altitude (staying at 2m for safety, but allowing movement above)
+                        # If the desired Z is below 2m, cap it at 2m. Otherwise, allow it to move as pointed.
+                        target_z = max(2.0, target_z) # Ensure minimum altitude of 2.0m
 
                         self.get_logger().debug(f"Hand Command: MOVE_FORWARD (3D Pointing) to ({target_x:.2f}, {target_y:.2f}, {target_z:.2f})")
                         self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
