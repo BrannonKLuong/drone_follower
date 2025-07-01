@@ -11,7 +11,7 @@ The core control loop and simulated perception have been successfully validated 
 ### Hand Gesture Control (RealSense 3D Depth)
 
 For a detailed view of the 3D hand tracking and gesture recognition with depth data, see the GIF below.
-![Hand Gesture Recognition with Depth](./assets/Drone%20Hand%20Gesture%20Recognition%20with%20Depth.gif)
+![Hand Gesture Recognition with Depth](./assets/Depth%20Directional%20Hand%20Commands.gif)
 
 ### Other Demonstrations
 
@@ -27,14 +27,14 @@ For a detailed view of the 3D hand tracking and gesture recognition with depth d
 
 ## Core Features & Capabilities
 
-* **Real-Time Hand Gesture Control (Upgraded to 3D Perception):** The drone is controlled by high-level commands generated from an AI-powered perception node. The system uses a debouncing algorithm, requiring a gesture to be held for several frames before a command is confirmed, preventing accidental actions. Implemented gestures include:
-    * **Fist (`LAND`):** Commands the drone to initiate landing.
-    * **Open Palm (`HOVER`):** Commands the drone to stop its current task and hold its position.
-    * **Pointing Finger (`MOVE_FORWARD`):** Commands the drone to move forward in its current direction. This functionality now incorporates true 3D directional pointing using the Intel RealSense D435i's depth data. The system tracks the 3D position of the hand and can derive a 3D pointing vector.
+* **Real-Time Hand Gesture Control (Upgraded to 3D Perception & Robustness):** The drone is controlled by high-level commands generated from an AI-powered perception node. The system uses a debouncing algorithm, requiring a gesture to be held for several frames before a command is confirmed, preventing accidental actions. Implemented gestures include:
+    * **Open Palm (`MOVE_FORWARD`):** Commands the drone to move forward in its current direction. The detection of an open palm (5 fingers extended) is now more lenient and accurate, reliably recognizing all five extended fingers from multiple angles. This functionality incorporates true 3D directional pointing using the Intel RealSense D435i's depth data. The system tracks the 3D position of the hand and derives a smoothed 3D pointing vector. Drone movement is currently constrained to the world X-Z plane (forward/backward and up/down relative to the camera's orientation), preventing lateral movement along the world Y-axis.
+    * **Fist (`LAND`):** Commands the drone to initiate landing. The detection logic for a fist has been significantly refined to be more robust across various hand orientations (e.g., upwards from front or back). It now uses advanced landmark analysis to accurately identify a fully curled fist (0 fingers extended), even with slight variations in finger positioning.
+    * **No Hand / No Command (`HOVER`):** When no recognized hand gesture is detected, or for ambiguous states, the drone is commanded to stop its current task and hold its position.
 
 * **Dynamic Obstacle Avoidance via Potential Fields:** The drone uses a custom potential field algorithm for navigation. This method calculates a real-time trajectory based on two competing forces:
     * **Attractive Force:** A vector pulling the drone towards its current goal (e.g., a waypoint or a moving target).
-    * **Repulsive Force:** A vector pushing the drone away from any nearby obstacles. This force is generated using real-time data from the `obstacle_perception_node`, which now processes actual `PointCloud2` data from the Intel RealSense D435i, allowing the drone to smoothly maneuver around objects without a pre-planned path.
+    * **Repulsive Force:** A vector pushing the drone away from any nearby obstacles. This force is generated using real-time `PointCloud2` data from the depth sensor, allowing the drone to smoothly maneuver around objects without a pre-planned path.
 
 * **Multi-State Control System:** A state machine manages the drone's behavior, allowing it to seamlessly arbitrate between different modes, such as following a target, executing a manual command, or initiating a "lost target" search pattern.
 
@@ -49,33 +49,24 @@ This project uses a **Remote Computing (or "Offboard Computing")** architecture 
 
 This system is composed of several custom ROS 2 nodes that work in concert.
 
-* **`current_fly_script.py`:** The central command node. It subscribes to all sensor and command inputs and is responsible for making high-level decisions. It implements the core Potential Field algorithm, using the simplified threat data from the perception node to calculate repulsive forces. It now also subscribes to `/hand_commands` to directly control the drone based on gestures.
-
-* **`hand_gesture_recognition_node.py`:** This node has been significantly upgraded. It now directly interfaces with the Intel RealSense D435i camera using `pyrealsense2`. It performs the following critical functions:
+* **`current_fly_script.py`:** The central command node. It subscribes to all sensor and command inputs and is responsible for making high-level decisions. It implements the core Potential Field algorithm, using the simplified threat data from the perception node to calculate repulsive forces. It now also subscribes to `/hand_commands` to directly control the drone based on gestures, incorporating the world Y-axis movement restriction and minimum altitude safety.
+* **`hand_gesture_recognition_node.py`:** This node has been significantly upgraded. It directly interfaces with the Intel RealSense D435i camera using `pyrealsense2`. It performs the following critical functions:
     * Acquires synchronized color, depth, and IMU frames from the RealSense.
     * Applies a decimation filter to the depth data for performance optimization.
     * Uses OpenCV and MediaPipe to detect hand landmarks on the color image.
     * Projects 2D hand landmarks to 3D coordinates using depth data and camera intrinsics.
+    * **Improved Finger Extension Detection:** Employs a robust method using dot products between finger segments to accurately determine if each finger (including the thumb) is extended or curled, making gesture recognition more reliable across various hand angles.
     * Calculates a 3D pointing vector from the index finger (when applicable).
     * Publishes detected hand commands (`String`), 3D hand positions (`geometry_msgs/PointStamped`), and 3D pointing vectors (`geometry_msgs/Vector3Stamped`).
     * Publishes `sensor_msgs/PointCloud2` data (`/camera/camera/depth/color/points`) and `sensor_msgs/Imu` data (`/camera/camera/imu`) directly from the RealSense camera.
     * Publishes static TF transforms for the camera's internal frames (`camera_link` to `camera_depth_optical_frame`, `camera_depth_optical_frame` to `camera_color_optical_frame`, `camera_depth_optical_frame` to `camera_imu_optical_frame`).
-    * Displays a live, annotated video feed using `cv2.imshow()` for real-time visual feedback.
-
+    * Displays a live, annotated video feed using `cv2.imshow()` for real-time visual feedback, including a visible green pointing arrow and readable angle/direction text.
 * **`obstacle_perception_node.py`:** This node subscribes to the real-time `PointCloud2` data published by `hand_gesture_recognition_node.py` (`/camera/camera/depth/color/points`). It processes this complex 3D data to find the most immediate threat to the drone and publishes the stable 3D coordinates of that threat to the `/detected_obstacle` topic.
-
 * **`mock_px4.py`:** In the simulation, this node mimics a real PX4 flight controller. It receives `TrajectorySetpoint` messages and publishes the drone's changing position and status. This is replaced by the real Cube Orange+ in the hardware phase.
-
 * **`px4_odometry_to_tf_publisher.py`:** This node subscribes to the drone's mock odometry data (`/fmu/out/vehicle_odometry`) and publishes the dynamic `odom` to `base_link` TF transform, allowing RViz to visualize the drone's movement.
-
 * **`static_transform_publisher`:** A ROS 2 utility used in the `run_all.sh` script to publish the static transform from `base_link` (drone body) to `camera_link` (camera base frame).
-
 * **`strobe_light_publisher.py`:** This node simulates the moving target that the drone is tasked with following. It publishes the 3D position of the strobe light.
-
-* **`hand_command_publisher.py`:** This node serves as a manual override interface, allowing a human operator to issue high-level commands like `MOVE_FORWARD`, `START_MAZE_TEST`, and `RESUME_STROBE_FOLLOW` via the keyboard. **For hand gesture control, this node can be commented out in `run_all.sh`.**
-
-* **`simulated_depth_sensor_publisher.py`:** This node previously created the virtual maze environment by publishing simulated `PointCloud2` data. It is now commented out in `run_all.sh` as the Intel RealSense D435i provides real-time depth data.
-
+* **`simulated_depth_sensor_publisher.py`:** This node can be used to create virtual maze environments by publishing simulated `PointCloud2` data. (Note: Currently configured for testing purposes, but the primary real-time depth data comes from the Intel RealSense D435i via `hand_gesture_recognition_node.py`).
 ## How to Run (RealSense Integrated Simulation)
 
 The simulation is launched using the `run_all.sh` script, which automates the setup of the entire environment.
