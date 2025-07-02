@@ -31,49 +31,55 @@ class SimulatedDepthSensorPublisher(Node):
         self.point_cloud_publisher = self.create_publisher(PointCloud2, '/camera/camera/depth/color/points', 10)
         self.obstacle_marker_publisher = self.create_publisher(Marker, '/obstacle_markers', 10)
 
-        # A smaller, more focused wall of obstacles
+        # --- MODIFIED: A circular wall of obstacles around the origin ---
         self.obstacles_in_odom = []
-        wall_y_position = 5.0
-        wall_start_x = -1.0 
-        wall_end_x = 1.0
-        wall_density = 4 # points per meter
+        radius = 4.0
+        num_obstacles = 24 # A good number for a dense wall
+        for i in range(num_obstacles):
+            angle = (2 * math.pi / num_obstacles) * i
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            self.obstacles_in_odom.append({'x': x, 'y': y, 'z': 1.5})
         
-        num_points = int((wall_end_x - wall_start_x) * wall_density) + 1
-        for i in range(num_points):
-            x = wall_start_x + (i / wall_density)
-            self.obstacles_in_odom.append({'x': x, 'y': wall_y_position, 'z': 1.5})
-        
-        self.get_logger().info(f"Created a focused simulated wall at y={wall_y_position} with {len(self.obstacles_in_odom)} points.")
+        self.get_logger().info(f"Created a circular wall with {len(self.obstacles_in_odom)} points at radius {radius}m.")
         
         self.timer = self.create_timer(0.1, self.timer_callback)
 
     def timer_callback(self):
         try:
+            # We need the transform that converts points from odom (world) to the camera's frame
             transform = self.tf_buffer.lookup_transform(
-                'camera_color_optical_frame',
-                'odom',
+                'camera_color_optical_frame',   # Target frame
+                'odom',                         # Source frame
                 rclpy.time.Time(),
-                rclpy.duration.Duration(seconds=1.0)
+                rclpy.duration.Duration(seconds=1.0) # Wait up to 1 second for TF tree to be ready
             )
         except TransformException as ex:
             self.get_logger().warn(f"Could not get transform from odom to camera frame, waiting...: {ex}")
-            return
+            return # Skip this cycle and try again on the next one
 
+        # If transform is successful, proceed
         self.publish_obstacle_markers()
 
         points_in_camera_frame = []
         for obs in self.obstacles_in_odom:
+            # Create a PointStamped for the obstacle in the odom frame
             obs_p_stamped = PointStamped(header=Header(frame_id='odom'), point=Point(x=obs['x'], y=obs['y'], z=obs['z']))
             p_camera = do_transform_point(obs_p_stamped, transform)
 
+            # --- Sensor Filtering (Range and FOV) ---
+            # 1. Check range
             dist_sq = p_camera.point.x**2 + p_camera.point.y**2 + p_camera.point.z**2
             if dist_sq > self.sensor_range**2:
-                continue
+                continue # Skip if out of range
 
+            # 2. Check FOV (camera's forward direction is its Z-axis in optical frame)
+            # We only check horizontal FOV for simplicity
             angle_to_point = math.atan2(p_camera.point.x, p_camera.point.z)
             if abs(angle_to_point) > (self.sensor_fov_rad / 2.0):
-                continue
+                continue # Skip if outside field of view
 
+            # If the point is within range and FOV, add it to the list
             points_in_camera_frame.append([p_camera.point.x, p_camera.point.y, p_camera.point.z])
 
         if points_in_camera_frame:
@@ -107,7 +113,7 @@ class SimulatedDepthSensorPublisher(Node):
             marker.pose.position = Point(x=obs['x'], y=obs['y'], z=obs['z'] / 2.0)
             marker.pose.orientation.w = 1.0
             marker.scale = Vector3(x=0.25, y=0.25, z=obs['z'] * 2)
-            marker.color = ColorRGBA(r=0.0, g=0.0, b=0.8, a=0.8)
+            marker.color = ColorRGBA(r=0.0, g=0.0, b=0.8, a=0.8) # Dark Blue
             marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
             self.obstacle_marker_publisher.publish(marker)
 

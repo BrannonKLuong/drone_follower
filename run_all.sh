@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# This script launches the entire drone simulation and control system,
-# specifically configured to test obstacle avoidance with a corrected TF tree.
+# This script launches a hybrid test environment to validate
+# hand-controlled flight with simultaneous obstacle avoidance.
 
 PROJECT_DIR=~/drone_project
 
@@ -22,32 +22,18 @@ gnome-terminal --tab --title="Drone Brain" -- bash -c "cd $PROJECT_DIR && source
 # Terminal 5: Odometry to TF Publisher
 gnome-terminal --tab --title="Odometry TF" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./px4_odometry_to_tf_publisher.py; exec bash"
 
-# --- TF CHAIN PUBLISHERS ---
-# These are now all handled here to ensure a complete and stable TF tree from the start.
-
-# Terminal 6: Static TF from base_link to camera_link (Drone body to camera mount)
+# Terminal 6: Static TF from base_link to camera_link
 gnome-terminal --tab --title="Camera Mount TF" -- bash -c "source /opt/ros/humble/setup.bash && ros2 run tf2_ros static_transform_publisher 0.1 0.0 0.0 0 0 0 base_link camera_link; exec bash"
 
-# --- CORRECTED: Using correct quaternion for camera optical frame transform ---
-# Terminal 7: Static TF from camera_link to camera_depth_optical_frame
-gnome-terminal --tab --title="Camera Depth TF" -- bash -c "source /opt/ros/humble/setup.bash && ros2 run tf2_ros static_transform_publisher 0 0 0 -0.5 0.5 -0.5 0.5 camera_link camera_depth_optical_frame; exec bash"
+# --- HYBRID TEST SETUP ---
+# Both the hand gesture node AND the simulated obstacle node are active.
 
-# Terminal 8: Static TF from camera_depth_optical_frame to camera_color_optical_frame
-gnome-terminal --tab --title="Camera Color TF" -- bash -c "source /opt/ros/humble/setup.bash && ros2 run tf2_ros static_transform_publisher 0.015 0 0 0 0 0 camera_depth_optical_frame camera_color_optical_frame; exec bash"
+# Terminal 7: Hand Gesture Recognition Node (Provides control commands)
+gnome-terminal --tab --title="Hand Gesture Recognition" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./hand_gesture_recognition_node.py; exec bash"
 
-
-# --- SENSOR AND VISUALIZATION NODES ---
-
-# Terminal 9: Simulated Depth Sensor (Creates the obstacle course)
+# Terminal 8: Simulated Depth Sensor (Provides the obstacle environment)
 gnome-terminal --tab --title="Simulated Obstacles" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./simulated_depth_sensor.py; exec bash"
 
-# Terminal 10: Vertical Grid Publisher for RViz (Optional but helpful)
-# gnome-terminal --tab --title="Vertical Grid" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./vertical_grid_publisher.py; exec bash"
 
-# --- DISABLED NODES FOR THIS TEST ---
-# The hand gesture node is disabled to ensure the point cloud data comes from the simulator only.
-# gnome-terminal --tab --title="Hand Gesture Recognition" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./hand_gesture_recognition_node.py; exec bash"
-
-echo "Collision Avoidance Test Environment launching..."
-echo "Simulated Obstacle node is ENABLED."
-echo "Hand Gesture node is DISABLED."
+echo "Hybrid Test Environment (Hand Control + Avoidance) launching..."
+echo "Both Hand Gesture node and Simulated Obstacle node are ENABLED."

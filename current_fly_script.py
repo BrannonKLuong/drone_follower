@@ -18,11 +18,11 @@ class DroneCommander(Node):
         super().__init__('drone_commander')
 
         # --- Parameters for flight behavior ---
-        self.declare_parameter('test_scenario_active', True)
+        self.declare_parameter('test_scenario_active', False) # Set to False to default to hand control
         self.declare_parameter('hover_altitude', 1.5) 
         self.declare_parameter('max_altitude', 6.0)
         self.declare_parameter('min_altitude', 0.5)
-        self.declare_parameter('avoidance_distance', 4.0) 
+        self.declare_parameter('avoidance_distance', 3.0) 
         self.declare_parameter('attraction_strength', 0.5) 
         self.declare_parameter('repulsion_strength', 1.5)
         self.declare_parameter('repulsion_falloff_rate', 1.5)
@@ -68,7 +68,7 @@ class DroneCommander(Node):
         self.hand_command_sub = self.create_subscription(String, '/hand_commands', self.hand_command_callback, 10)
         self.vehicle_odometry_sub = self.create_subscription(VehicleOdometry, '/fmu/out/vehicle_odometry', self.vehicle_odometry_callback, self.px4_mock_qos_profile)
 
-        self.hand_pointing_vector_sub = self.create_publisher(Vector3Stamped, '/hand_pointing_vector', 10)
+        self.hand_pointing_vector_sub = self.create_subscription(Vector3Stamped, '/hand_pointing_vector', self.hand_pointing_vector_callback, 10)
         self.last_pointing_vector_stamped = None
 
         # --- TF2 Setup ---
@@ -87,26 +87,16 @@ class DroneCommander(Node):
         self.obstacle_memory_duration = 0.5
         self.current_drone_yaw = 0.0
         self.current_hand_command = "NO_HAND"
-        self.control_mode = "MISSION" if self.test_scenario_active else "HAND_CONTROL"
-        
-        # --- NEW: State for handling race condition ---
-        self.mission_started = False
-        self.takeoff_time = None
-        self.mission_start_timeout = 5.0 # seconds
+        self.control_mode = "HAND_CONTROL" # Default to hand control
 
         # --- Main control timer ---
         self.timer = self.create_timer(0.1, self.timer_callback)
         
     def local_position_callback(self, msg): self.local_position = msg
     def vehicle_status_callback(self, msg): self.vehicle_status = msg
-    
     def detected_obstacle_callback(self, msg: Point):
         self.last_detected_obstacle_point = msg
         self.last_obstacle_timestamp = self.get_clock().now()
-        # --- NEW: Trigger mission start on first obstacle detection ---
-        if not self.mission_started and self.control_mode == "MISSION":
-            self.get_logger().info("Obstacle environment detected. Starting mission.")
-            self.mission_started = True
 
     def vehicle_odometry_callback(self, msg: VehicleOdometry):
         q_w, q_x, q_y, q_z = msg.q
@@ -116,7 +106,6 @@ class DroneCommander(Node):
 
     def hand_command_callback(self, msg: String):
         self.current_hand_command = msg.data
-        self.get_logger().info(f"Received hand command: {self.current_hand_command}")
         if self.current_hand_command in ["HOVER", "MOVE_FORWARD", "LAND"]:
             self.control_mode = "HAND_CONTROL"
         elif self.current_hand_command == "RESUME_MISSION":
@@ -168,14 +157,12 @@ class DroneCommander(Node):
             if self.offboard_setpoint_counter == 100: self.arm()
             if self.offboard_setpoint_counter == 120: 
                 self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
-                self.takeoff_time = self.get_clock().now() # Start timer after takeoff
             self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
             return
 
         if self.landing_initiated:
             if current_z_enu < 0.2:
-                self.disarm()
-                self.mission_completed = True
+                self.disarm(); self.mission_completed = True
                 self.get_logger().info("Drone landed and disarmed. Shutting down.")
                 time.sleep(1); self.destroy_node(); rclpy.shutdown()
             return
@@ -184,92 +171,18 @@ class DroneCommander(Node):
             self.get_logger().warn("Drone not in OFFBOARD mode. Cannot send setpoints.")
             return
 
-        # --- MODIFIED: Gatekeeping logic for mission start ---
-        if self.control_mode == "MISSION" and not self.mission_started:
-            # Check for timeout
-            if self.takeoff_time and (self.get_clock().now() - self.takeoff_time).nanoseconds / 1e9 > self.mission_start_timeout:
-                self.get_logger().warn("Mission start timeout reached. Starting mission without obstacle confirmation.")
-                self.mission_started = True
-            else:
-                self.get_logger().info("Waiting for obstacle environment to be ready...")
-                self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
-                return
-
-        # --- Main Control Logic ---
         if self.control_mode == "HAND_CONTROL":
             self.handle_hand_control(current_x_enu, current_y_enu)
-        elif self.control_mode == "MISSION" and self.mission_started:
+        elif self.control_mode == "MISSION":
             self.handle_mission_control(current_x_enu, current_y_enu)
 
-    def handle_hand_control(self, current_x_enu, current_y_enu):
-        if self.current_hand_command == "MOVE_FORWARD" and self.last_pointing_vector_stamped:
-            try:
-                horizontal_pointing_vector = Vector3Stamped()
-                horizontal_pointing_vector.header = self.last_pointing_vector_stamped.header
-                horizontal_pointing_vector.vector.x = self.last_pointing_vector_stamped.vector.x
-                horizontal_pointing_vector.vector.y = self.last_pointing_vector_stamped.vector.y
-                horizontal_pointing_vector.vector.z = 0.0
-
-                transform_to_body = self.tf_buffer.lookup_transform(
-                    'base_link',
-                    horizontal_pointing_vector.header.frame_id,
-                    rclpy.time.Time(),
-                    rclpy.duration.Duration(seconds=0.1)
-                )
-                body_relative_vector = do_transform_vector3(horizontal_pointing_vector, transform_to_body)
-
-                vel_x = body_relative_vector.vector.x
-                vel_y = body_relative_vector.vector.y
-                
-                magnitude = math.sqrt(vel_x**2 + vel_y**2)
-                if magnitude > 1e-6:
-                    vel_x /= magnitude
-                    vel_y /= magnitude
-
-                target_x = current_x_enu + (vel_x * math.cos(self.current_drone_yaw) - vel_y * math.sin(self.current_drone_yaw)) * self.movement_speed
-                target_y = current_y_enu + (vel_x * math.sin(self.current_drone_yaw) + vel_y * math.cos(self.current_drone_yaw)) * self.movement_speed
-                target_z = self.hover_altitude
-
-                self.get_logger().debug(f"Moving to ({target_x:.2f}, {target_y:.2f}, {target_z:.2f})")
-                self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
-
-            except TransformException as ex:
-                self.get_logger().warn(f"Could not transform pointing vector: {ex}. Hovering.")
-                self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
-        elif self.current_hand_command == "LAND":
-            self.land()
-        else:
-            self.get_logger().debug("Hovering.")
-            self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
-
-    def handle_mission_control(self, current_x_enu, current_y_enu):
-        if not self.test_scenario_active:
-            self.get_logger().debug("Mission mode active, but no test scenario. Hovering.")
-            self.publish_trajectory_setpoint(current_x_enu, current_y_enu, self.hover_altitude, self.current_drone_yaw)
-            return
-
-        if self.current_waypoint_index >= len(self.static_waypoints):
-            self.get_logger().info("All waypoints reached. Landing.")
-            self.land()
-            return
-
-        waypoint = self.static_waypoints[self.current_waypoint_index]
-        goal_x, goal_y, goal_z = waypoint['x'], waypoint['y'], waypoint['z']
-
-        if math.sqrt((current_x_enu - goal_x)**2 + (current_y_enu - goal_y)**2) < self.goal_tolerance_radius:
-            self.get_logger().info(f"Waypoint {self.current_waypoint_index} reached.")
-            self.current_waypoint_index += 1
-            return
-
-        # Potential Field Logic
-        attractive_vec_x = (goal_x - current_x_enu) * self.attraction_strength
-        attractive_vec_y = (goal_y - current_y_enu) * self.attraction_strength
+    def calculate_repulsive_force(self, current_x_enu, current_y_enu):
         repulsive_vec_x, repulsive_vec_y = 0.0, 0.0
-        
         if (self.get_clock().now() - self.last_obstacle_timestamp).nanoseconds / 1e9 < self.obstacle_memory_duration and self.last_detected_obstacle_point:
             obs_x, obs_y = self.last_detected_obstacle_point.x, self.last_detected_obstacle_point.y
             dist_to_obs = math.sqrt((obs_x - current_x_enu)**2 + (obs_y - current_y_enu)**2)
             if dist_to_obs < self.avoidance_distance:
+                self.get_logger().info(f"AVOIDANCE ACTIVE: dist={dist_to_obs:.2f}m")
                 vec_from_obs_x = current_x_enu - obs_x
                 vec_from_obs_y = current_y_enu - obs_y
                 magnitude = math.sqrt(vec_from_obs_x**2 + vec_from_obs_y**2)
@@ -279,9 +192,61 @@ class DroneCommander(Node):
                     repulsion_force = self.repulsion_strength * (1.0 - (dist_to_obs / self.avoidance_distance)) ** self.repulsion_falloff_rate
                     repulsive_vec_x = norm_vec_x * repulsion_force
                     repulsive_vec_y = norm_vec_y * repulsion_force
+        return repulsive_vec_x, repulsive_vec_y
+
+    def handle_hand_control(self, current_x_enu, current_y_enu):
+        attractive_vec_x, attractive_vec_y = 0.0, 0.0
+
+        if self.current_hand_command == "MOVE_FORWARD" and self.last_pointing_vector_stamped:
+            try:
+                transform_to_odom = self.tf_buffer.lookup_transform('odom', self.last_pointing_vector_stamped.header.frame_id, rclpy.time.Time())
+                odom_vector = do_transform_vector3(self.last_pointing_vector_stamped, transform_to_odom)
+                attractive_vec_x = odom_vector.vector.x
+                attractive_vec_y = odom_vector.vector.y
+            except TransformException as ex:
+                self.get_logger().warn(f"Could not transform pointing vector: {ex}. Hovering.")
+        elif self.current_hand_command == "LAND":
+            self.land()
+            return
+        
+        repulsive_vec_x, repulsive_vec_y = self.calculate_repulsive_force(current_x_enu, current_y_enu)
         
         final_vec_x = attractive_vec_x + repulsive_vec_x
         final_vec_y = attractive_vec_y + repulsive_vec_y
+        
+        final_magnitude = math.sqrt(final_vec_x**2 + final_vec_y**2)
+        if final_magnitude > 1e-6:
+            norm_final_vec_x = final_vec_x / final_magnitude
+            norm_final_vec_y = final_vec_y / final_magnitude
+        else:
+            norm_final_vec_x, norm_final_vec_y = 0.0, 0.0
+        
+        target_x = current_x_enu + norm_final_vec_x * self.movement_speed
+        target_y = current_y_enu + norm_final_vec_y * self.movement_speed
+        target_z = self.hover_altitude
+
+        self.publish_trajectory_setpoint(target_x, target_y, target_z, self.current_drone_yaw)
+
+    def handle_mission_control(self, current_x_enu, current_y_enu):
+        if not self.test_scenario_active or self.current_waypoint_index >= len(self.static_waypoints):
+            self.land(); return
+
+        waypoint = self.static_waypoints[self.current_waypoint_index]
+        goal_x, goal_y, goal_z = waypoint['x'], waypoint['y'], waypoint['z']
+
+        if math.sqrt((current_x_enu - goal_x)**2 + (current_y_enu - goal_y)**2) < self.goal_tolerance_radius:
+            self.get_logger().info(f"Waypoint {self.current_waypoint_index} reached.")
+            self.current_waypoint_index += 1
+            return
+
+        attractive_vec_x = (goal_x - current_x_enu) * self.attraction_strength
+        attractive_vec_y = (goal_y - current_y_enu) * self.attraction_strength
+        
+        repulsive_vec_x, repulsive_vec_y = self.calculate_repulsive_force(current_x_enu, current_y_enu)
+        
+        final_vec_x = attractive_vec_x + repulsive_vec_x
+        final_vec_y = attractive_vec_y + repulsive_vec_y
+        
         final_magnitude = math.sqrt(final_vec_x**2 + final_vec_y**2)
         if final_magnitude > 1e-6:
             norm_final_vec_x = final_vec_x / final_magnitude

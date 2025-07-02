@@ -141,6 +141,7 @@ class HandGestureRecognitionNode(Node):
         These are typically fixed relative to each other.
         """
         now = self.get_clock().now().to_msg()
+        transforms = []
 
         # camera_link -> camera_depth_optical_frame
         t_depth_opt = TransformStamped()
@@ -154,10 +155,8 @@ class HandGestureRecognitionNode(Node):
         t_depth_opt.transform.rotation.y = 0.5
         t_depth_opt.transform.rotation.z = -0.5
         t_depth_opt.transform.rotation.w = 0.5
-        self.static_tf_broadcaster.sendTransform(t_depth_opt)
-        self.get_logger().info("Published static TF: camera_link -> camera_depth_optical_frame")
-
-
+        transforms.append(t_depth_opt)
+        
         # camera_depth_optical_frame -> camera_color_optical_frame
         t_color_opt = TransformStamped()
         t_color_opt.header.stamp = now
@@ -167,9 +166,7 @@ class HandGestureRecognitionNode(Node):
         t_color_opt.transform.translation.y = 0.0
         t_color_opt.transform.translation.z = 0.0
         t_color_opt.transform.rotation.w = 1.0
-        self.static_tf_broadcaster.sendTransform(t_color_opt)
-        self.get_logger().info("Published static TF: camera_depth_optical_frame -> camera_color_optical_frame")
-
+        transforms.append(t_color_opt)
 
         # camera_depth_optical_frame -> camera_imu_optical_frame
         t_imu_opt = TransformStamped()
@@ -180,8 +177,10 @@ class HandGestureRecognitionNode(Node):
         t_imu_opt.transform.translation.y = 0.0
         t_imu_opt.transform.translation.z = 0.0
         t_imu_opt.transform.rotation.w = 1.0
-        self.static_tf_broadcaster.sendTransform(t_imu_opt)
-        self.get_logger().info("Published static TF: camera_depth_optical_frame -> camera_imu_optical_frame")
+        transforms.append(t_imu_opt)
+        
+        self.static_tf_broadcaster.sendTransform(transforms)
+        self.get_logger().info("Published static camera TF chain.")
 
 
     def timer_callback(self):
@@ -226,13 +225,13 @@ class HandGestureRecognitionNode(Node):
         current_raw_pointing_vector = np.array([0.0, 0.0, 0.0]) # Will be updated if hand detected
         
         pointing_direction_text = "N/A"
-        arrow_start_2d = None
-        arrow_end_2d = None
+        wrist_distance_raw = 0
+        wrist_distance_meters = 0
+        hand_landmarks = None
 
         # --- Initialize/Resize OpenCV window once ---
         if not self.window_initialized:
             cv2.namedWindow('Hand Gesture Recognition', cv2.WINDOW_NORMAL) # Make window resizable
-            # Set initial size to match stream resolution or larger if desired
             cv2.resizeWindow('Hand Gesture Recognition', self.stream_res_x, self.stream_res_y) 
             self.window_initialized = True
 
@@ -242,10 +241,10 @@ class HandGestureRecognitionNode(Node):
             decimated_width = decimated_profile.width()
             decimated_height = decimated_profile.height()
 
-            for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
+            for hand_idx, hand_landmarks_from_results in enumerate(results.multi_hand_landmarks):
+                hand_landmarks = hand_landmarks_from_results # Assign to the broader scope variable
                 self.mp_drawing.draw_landmarks(display_image, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
-                # Use WRIST as the primary hand position for display distance
                 wrist_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST] 
                 
                 x_pixel_wrist = int(wrist_2d_norm.x * decimated_width)
@@ -270,74 +269,24 @@ class HandGestureRecognitionNode(Node):
                     self.hand_3d_position_publisher.publish(hand_pos_msg)
                     self.publish_hand_marker(hand_pos_msg.point.x, hand_pos_msg.point.y, hand_pos_msg.point.z, hand_idx)
                     
-                    # --- Determine if fingers are extended using dot product for all fingers ---
-                    num_fingers_extended = 0
+                    num_fingers_extended = self.count_extended_fingers(hand_landmarks)
                     
-                    # Thumb extension check (using dot product between thumb_mcp-thumb_ip and thumb_ip-thumb_tip)
-                    thumb_ip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_IP]
-                    thumb_mcp = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_MCP]
-                    thumb_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP]
-
-                    vec_mcp_ip_thumb = np.array([thumb_ip.x - thumb_mcp.x, thumb_ip.y - thumb_mcp.y, thumb_ip.z - thumb_mcp.z])
-                    vec_ip_tip_thumb = np.array([thumb_tip.x - thumb_ip.x, thumb_tip.y - thumb_ip.y, thumb_tip.z - thumb_ip.z])
-
-                    norm_mcp_ip_thumb = np.linalg.norm(vec_mcp_ip_thumb)
-                    norm_ip_tip_thumb = np.linalg.norm(vec_ip_tip_thumb)
-
-                    if norm_mcp_ip_thumb > 1e-6 and norm_ip_tip_thumb > 1e-6:
-                        dot_product_thumb = np.dot(vec_mcp_ip_thumb / norm_mcp_ip_thumb, vec_ip_tip_thumb / norm_ip_tip_thumb)
-                        if dot_product_thumb > self.EXTENSION_DOT_PRODUCT_THUMB: # If dot product is high, thumb is extended
-                            num_fingers_extended += 1
-
-                    finger_tip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_TIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP, 
-                                      self.mp_hands.HandLandmark.RING_FINGER_TIP, self.mp_hands.HandLandmark.PINKY_TIP]
-                    finger_pip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_PIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP,
-                                      self.mp_hands.HandLandmark.RING_FINGER_PIP, self.mp_hands.HandLandmark.PINKY_PIP]
-                    finger_mcp_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_MCP, self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP,
-                                      self.mp_hands.HandLandmark.RING_FINGER_MCP, self.mp_hands.HandLandmark.PINKY_MCP]
-
-                    for i in range(4): # For Index, Middle, Ring, Pinky fingers
-                        tip = hand_landmarks.landmark[finger_tip_ids[i]]
-                        pip = hand_landmarks.landmark[finger_pip_ids[i]]
-                        mcp = hand_landmarks.landmark[finger_mcp_ids[i]]
-
-                        vec_mcp_pip = np.array([pip.x - mcp.x, pip.y - mcp.y, pip.z - mcp.z])
-                        vec_pip_tip = np.array([tip.x - pip.x, tip.y - pip.y, tip.z - pip.z])
-
-                        norm_mcp_pip = np.linalg.norm(vec_mcp_pip)
-                        norm_pip_tip = np.linalg.norm(vec_pip_tip)
-
-                        if norm_mcp_pip > 1e-6 and norm_pip_tip > 1e-6:
-                            dot_product = np.dot(vec_mcp_pip / norm_mcp_pip, vec_pip_tip / norm_pip_tip)
-                            if dot_product > self.EXTENSION_DOT_PRODUCT_FINGER: # If dot product is high, finger is extended
-                                num_fingers_extended += 1
-                        # If not extended, it doesn't add to the count
-                    
-                    # Gesture Recognition Logic (simplified, no priming state)
-                    if num_fingers_extended < 3: # 0, 1, or 2 fingers extended (fist or near-fist)
+                    if num_fingers_extended < 3:
                         self.land_detection_count += 1
                         if self.land_detection_count >= self.land_debounce_frames:
                             command = "LAND"
-                            self.land_detection_count = 0 # Reset counter after command is issued
+                            self.land_detection_count = 0
                         else:
-                            command = "DETECTING_LAND" # Indicate that land is being detected
-                    elif num_fingers_extended == 5: # All 5 fingers extended (potential pointing or open palm)
-                        self.land_detection_count = 0 # Reset land detection if another gesture is made
-
-                        # Check for "tightness" of fingers for pointing gesture
+                            command = "DETECTING_LAND"
+                    elif num_fingers_extended == 5:
+                        self.land_detection_count = 0
                         index_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
                         pinky_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
+                        dist_index_pinky_tips = math.sqrt((index_tip.x - pinky_tip.x)**2 + (index_tip.y - pinky_tip.y)**2 + (index_tip.z - pinky_tip.z)**2)
                         
-                        dist_index_pinky_tips = math.sqrt(
-                            (index_tip.x - pinky_tip.x)**2 + 
-                            (index_tip.y - pinky_tip.y)**2 + 
-                            (index_tip.z - pinky_tip.z)**2
-                        )
-
-                        # Heuristic: If the distance between index and pinky tips is small (normalized units)
-                        if dist_index_pinky_tips < 0.15: # Tight for pointing
+                        if dist_index_pinky_tips < 0.15:
                             command = "MOVE_FORWARD"
-                            # Pointing vector calculation and publishing (remains here)
+                            # Pointing vector calculation
                             wrist_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
                             index_tip_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
 
@@ -386,42 +335,23 @@ class HandGestureRecognitionNode(Node):
                                 pointing_vector_msg.vector.y = averaged_vector[1]
                                 pointing_vector_msg.vector.z = averaged_vector[2]
 
-                                self.hand_pointing_publisher.publish(pointing_vector_msg)
-                                self.publish_pointing_arrow_marker(Point(x=wrist_3d_vec[0], y=wrist_3d_vec[1], z=wrist_3d_vec[2]), pointing_vector_msg.vector, hand_idx)
-
-                                # Calculate and Display Direction (Left/Right/Up/Down)
                                 vx, vy, vz = averaged_vector[0], averaged_vector[1], averaged_vector[2]
-
                                 horizontal_angle_rad = math.atan2(vx, vz if abs(vz) > 1e-6 else (1e-6 if vx >= 0 else -1e-6))
                                 horizontal_angle_deg = math.degrees(horizontal_angle_rad)
-
                                 horizontal_projection_magnitude = math.sqrt(vx**2 + vz**2)
                                 vertical_angle_rad = 0.0
                                 if horizontal_projection_magnitude > 1e-6:
                                     vertical_angle_rad = math.atan2(-vy, horizontal_projection_magnitude)
                                 vertical_angle_deg = math.degrees(vertical_angle_rad)
-
-                                horiz_text = ""
-                                if abs(horizontal_angle_deg) < 25:
-                                    if vz > 0: horiz_text = "Forward"
-                                    else: horiz_text = "Backward"
-                                elif horizontal_angle_deg > 0: horiz_text = "Right"
-                                else: horiz_text = "Left"
-                                
-                                vert_text = ""
-                                if abs(vertical_angle_deg) < 10: vert_text = "Level"
-                                elif vertical_angle_deg > 0: vert_text = "Up"
-                                else: vert_text = "Down"
-
-                                pointing_direction_text = f"H: {horiz_text} ({abs(horizontal_angle_deg):.1f} deg), V: {vert_text} ({abs(vertical_angle_deg):.1f} deg)"
-                                
+                                horiz_text = "Forward" if abs(horizontal_angle_deg) < 25 else ("Right" if horizontal_angle_deg > 0 else "Left")
+                                vert_text = "Level" if abs(vertical_angle_deg) < 10 else ("Up" if vertical_angle_deg > 0 else "Down")
+                                pointing_direction_text = f"H: {horiz_text} ({abs(horizontal_angle_deg):.1f}), V: {vert_text} ({abs(vertical_angle_deg):.1f})"
                             else:
-                                self.get_logger().warn("Could not get valid depth for wrist or index_tip for pointing vector.")
                                 pointing_direction_text = "Depth Error"
                         else:
-                            command = "HOVER" # Open palm, but not tight pointing
-                    else: # Covers 3 or 4 fingers extended (open palm, not pointing)
-                        self.land_detection_count = 0 # Reset land detection
+                            command = "HOVER"
+                    else:
+                        self.land_detection_count = 0
                         command = "HOVER"
                     
                     cv2.putText(display_image, f"Distance: {wrist_distance_meters:.2f} m", (10, 30), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
@@ -433,73 +363,40 @@ class HandGestureRecognitionNode(Node):
 
         else:
             command = "NO_HAND"
-            self.land_detection_count = 0 # Reset land detection if no hand detected
+            self.land_detection_count = 0
             cv2.putText(display_image, "No Hands Detected", (10, 30), self.font, self.fontScale, self.color, self.thickness, cv2.LINE_AA)
             cv2.putText(display_image, f"Pointing: {pointing_direction_text}", (10, 90), self.font, self.fontScale * 0.8, self.color, self.thickness - 1, cv2.LINE_AA)
 
-        # Always publish the pointing vector message, even if it's zero (no hand/not pointing)
         self.hand_pointing_publisher.publish(pointing_vector_msg)
 
-        # --- Draw 2D pointing arrow on display_image ---
-        # This block is now outside the gesture detection logic, ensuring it always tries to draw
-        # if the 3D points for wrist and index tip are available.
-        if results.multi_hand_landmarks and wrist_distance_raw > 0 and wrist_distance_meters < self.clipping_distance_in_meters:
-            # Recalculate 3D points and vector for arrow drawing, regardless of gesture classification
-            # This ensures the arrow is drawn even if the gesture isn't "MOVE_FORWARD"
+        if hand_landmarks and wrist_distance_raw > 0 and wrist_distance_meters < self.clipping_distance_in_meters:
+            decimated_width = decimated_depth_frame.profile.as_video_stream_profile().width()
+            decimated_height = decimated_depth_frame.profile.as_video_stream_profile().height()
+            decimated_intrinsics = decimated_depth_frame.profile.as_video_stream_profile().intrinsics
             wrist_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
             index_tip_2d_norm = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
-
             wrist_depth_x_pixel = int(wrist_2d_norm.x * decimated_width)
             wrist_depth_y_pixel = int(wrist_2d_norm.y * decimated_height)
             index_tip_depth_x_pixel = int(index_tip_2d_norm.x * decimated_width)
             index_tip_depth_y_pixel = int(index_tip_2d_norm.y * decimated_height)
-
-            wrist_depth_x_pixel = np.clip(wrist_depth_x_pixel, 0, decimated_width - 1)
-            wrist_depth_y_pixel = np.clip(wrist_depth_y_pixel, 0, decimated_height - 1)
-            index_tip_depth_x_pixel = np.clip(index_tip_depth_x_pixel, 0, decimated_width - 1)
-            index_tip_depth_y_pixel = np.clip(index_tip_depth_y_pixel, 0, decimated_height - 1)
-
-            wrist_distance_raw_for_vec = depth_image_flipped[wrist_depth_y_pixel, wrist_depth_x_pixel]
-            index_tip_distance_raw_for_vec = depth_image_flipped[index_tip_depth_y_pixel, index_tip_depth_x_pixel]
+            wrist_distance_raw_for_vec = depth_image_flipped[np.clip(wrist_depth_y_pixel, 0, decimated_height-1), np.clip(wrist_depth_x_pixel, 0, decimated_width-1)]
+            index_tip_distance_raw_for_vec = depth_image_flipped[np.clip(index_tip_depth_y_pixel, 0, decimated_height-1), np.clip(index_tip_depth_x_pixel, 0, decimated_width-1)]
 
             if wrist_distance_raw_for_vec > 0 and index_tip_distance_raw_for_vec > 0:
                 wrist_3d_vec = rs.rs2_deproject_pixel_to_point(decimated_intrinsics, [wrist_depth_x_pixel, wrist_depth_y_pixel], wrist_distance_raw_for_vec * self.depth_scale)
                 index_tip_3d_vec = rs.rs2_deproject_pixel_to_point(decimated_intrinsics, [index_tip_depth_x_pixel, index_tip_depth_y_pixel], index_tip_distance_raw_for_vec * self.depth_scale)
-
                 vec_x = index_tip_3d_vec[0] - wrist_3d_vec[0]
                 vec_y = index_tip_3d_vec[1] - wrist_3d_vec[1]
                 vec_z = index_tip_3d_vec[2] - wrist_3d_vec[2]
-
                 magnitude = math.sqrt(vec_x**2 + vec_y**2 + vec_z**2)
                 if magnitude > 1e-6:
                     current_raw_pointing_vector = np.array([vec_x / magnitude, vec_y / magnitude, vec_z / magnitude])
-                else:
-                    current_raw_pointing_vector = np.array([0.0, 0.0, 0.0])
-
-                # Project a point 0.1m along the AVERAGED vector from wrist_3d_vec for 2D visualization
-                arrow_end_3d_for_proj = [
-                    wrist_3d_vec[0] + current_raw_pointing_vector[0] * 0.1,
-                    wrist_3d_vec[1] + current_raw_pointing_vector[1] * 0.1,
-                    wrist_3d_vec[2] + current_raw_pointing_vector[2] * 0.1
-                ]
-                
+                arrow_end_3d_for_proj = [wrist_3d_vec[0] + current_raw_pointing_vector[0] * 0.1, wrist_3d_vec[1] + current_raw_pointing_vector[1] * 0.1, wrist_3d_vec[2] + current_raw_pointing_vector[2] * 0.1]
                 arrow_start_2d_pixel = rs.rs2_project_point_to_pixel(self.color_intrinsics, wrist_3d_vec)
                 arrow_end_2d_pixel = rs.rs2_project_point_to_pixel(self.color_intrinsics, arrow_end_3d_for_proj)
-                
                 arrow_start_2d = (int(arrow_start_2d_pixel[0]), int(arrow_start_2d_pixel[1]))
                 arrow_end_2d = (int(arrow_end_2d_pixel[0]), int(arrow_end_2d_pixel[1]))
-
-                # Ensure arrow coordinates are within image bounds before drawing
-                arrow_start_2d = (np.clip(arrow_start_2d[0], 0, display_image.shape[1]-1), np.clip(arrow_start_2d[1], 0, display_image.shape[0]-1))
-                arrow_end_2d = (np.clip(arrow_end_2d[0], 0, display_image.shape[1]-1), np.clip(arrow_end_2d[1], 0, display_image.shape[0]-1))
-                
-                cv2.arrowedLine(display_image, arrow_start_2d, arrow_end_2d, (0, 255, 0), 3) # Green arrow
-                self.get_logger().debug(f"Arrow drawn: Start {arrow_start_2d}, End {arrow_end_2d}")
-            else:
-                self.get_logger().debug("Could not get valid depth for wrist or index_tip for arrow drawing.")
-        else:
-            self.get_logger().debug("No hand landmarks detected or hand not within clipping distance for arrow drawing.")
-
+                cv2.arrowedLine(display_image, arrow_start_2d, arrow_end_2d, (0, 255, 0), 3)
 
         command_msg = String()
         command_msg.data = command
@@ -511,6 +408,53 @@ class HandGestureRecognitionNode(Node):
 
         self.publish_pointcloud(decimated_depth_frame, color_frame)
 
+    def count_extended_fingers(self, hand_landmarks):
+        """
+        Counts the number of extended fingers based on the dot product of the phalanges.
+        """
+        num_fingers_extended = 0
+        
+        # Thumb extension check
+        thumb_ip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_IP]
+        thumb_mcp = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_MCP]
+        thumb_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP]
+
+        vec_mcp_ip_thumb = np.array([thumb_ip.x - thumb_mcp.x, thumb_ip.y - thumb_mcp.y, thumb_ip.z - thumb_mcp.z])
+        vec_ip_tip_thumb = np.array([thumb_tip.x - thumb_ip.x, thumb_tip.y - thumb_ip.y, thumb_tip.z - thumb_ip.z])
+
+        norm_mcp_ip_thumb = np.linalg.norm(vec_mcp_ip_thumb)
+        norm_ip_tip_thumb = np.linalg.norm(vec_ip_tip_thumb)
+
+        if norm_mcp_ip_thumb > 1e-6 and norm_ip_tip_thumb > 1e-6:
+            dot_product_thumb = np.dot(vec_mcp_ip_thumb / norm_mcp_ip_thumb, vec_ip_tip_thumb / norm_ip_tip_thumb)
+            if dot_product_thumb > self.EXTENSION_DOT_PRODUCT_THUMB:
+                num_fingers_extended += 1
+
+        # Finger extension check for the other four fingers
+        finger_tip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_TIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP, 
+                          self.mp_hands.HandLandmark.RING_FINGER_TIP, self.mp_hands.HandLandmark.PINKY_TIP]
+        finger_pip_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_PIP, self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP,
+                          self.mp_hands.HandLandmark.RING_FINGER_PIP, self.mp_hands.HandLandmark.PINKY_PIP]
+        finger_mcp_ids = [self.mp_hands.HandLandmark.INDEX_FINGER_MCP, self.mp_hands.HandLandmark.MIDDLE_FINGER_MCP,
+                          self.mp_hands.HandLandmark.RING_FINGER_MCP, self.mp_hands.HandLandmark.PINKY_MCP]
+
+        for i in range(4):
+            tip = hand_landmarks.landmark[finger_tip_ids[i]]
+            pip = hand_landmarks.landmark[finger_pip_ids[i]]
+            mcp = hand_landmarks.landmark[finger_mcp_ids[i]]
+
+            vec_mcp_pip = np.array([pip.x - mcp.x, pip.y - mcp.y, pip.z - mcp.z])
+            vec_pip_tip = np.array([tip.x - pip.x, tip.y - pip.y, tip.z - pip.z])
+
+            norm_mcp_pip = np.linalg.norm(vec_mcp_pip)
+            norm_pip_tip = np.linalg.norm(vec_pip_tip)
+
+            if norm_mcp_pip > 1e-6 and norm_pip_tip > 1e-6:
+                dot_product = np.dot(vec_mcp_pip / norm_mcp_pip, vec_pip_tip / norm_pip_tip)
+                if dot_product > self.EXTENSION_DOT_PRODUCT_FINGER:
+                    num_fingers_extended += 1
+        
+        return num_fingers_extended
 
     def process_imu_frame(self, frame):
         """Processes IMU (accelerometer and gyroscope) frames and publishes them."""
