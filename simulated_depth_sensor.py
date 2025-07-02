@@ -1,129 +1,115 @@
 import rclpy
 from rclpy.node import Node
-from px4_msgs.msg import VehicleLocalPosition
 from sensor_msgs.msg import PointCloud2, PointField
-from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
-from std_msgs.msg import ColorRGBA
+from std_msgs.msg import ColorRGBA, Header
+from geometry_msgs.msg import Point, Vector3, PointStamped
 import math
 import struct
+import numpy as np
+
+# TF2 imports
+import tf2_ros
+from tf2_ros import TransformException
+from tf2_geometry_msgs import do_transform_point
 
 class SimulatedDepthSensorPublisher(Node):
     def __init__(self):
         super().__init__('simulated_depth_sensor_publisher')
 
-        self.declare_parameter('sensor_range', 7.0)
+        self.declare_parameter('sensor_range', 10.0)
+        self.declare_parameter('sensor_fov_deg', 90.0) # Horizontal Field of View
         self.sensor_range = self.get_parameter('sensor_range').get_parameter_value().double_value
+        self.sensor_fov_rad = math.radians(self.get_parameter('sensor_fov_deg').get_parameter_value().double_value)
         
-        self.get_logger().info(f"Simulated Depth Sensor started with range: {self.sensor_range}m")
+        self.get_logger().info(f"Simulated Depth Sensor started with range: {self.sensor_range}m and FOV: {self.get_parameter('sensor_fov_deg').get_parameter_value().double_value} degrees")
 
-        qos_profile = rclpy.qos.QoSProfile(
-            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
-            history=rclpy.qos.HistoryPolicy.KEEP_LAST,
-            depth=5
-        )
-        self.local_position_sub = self.create_subscription(
-            VehicleLocalPosition,
-            '/fmu/out/vehicle_local_position',
-            self.local_position_callback,
-            qos_profile
-        )
-        self.drone_x_enu = 0.0
-        self.drone_y_enu = 0.0
-        self.drone_z_enu = 0.0
+        # --- TF2 Setup ---
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.point_cloud_publisher = self.create_publisher(PointCloud2, '/simulated_depth_sensor/points', 10)
+        self.point_cloud_publisher = self.create_publisher(PointCloud2, '/camera/camera/depth/color/points', 10)
         self.obstacle_marker_publisher = self.create_publisher(Marker, '/obstacle_markers', 10)
 
-        # --- NEW: Distinguishing between walls and obstacles ---
-        self.obstacles = [
-            # Walls are 'wall' type
-            {'pos': (-2.5, 2.0, 1.5), 'type': 'wall'},
-            {'pos': (-2.5, 4.0, 1.5), 'type': 'wall'},
-            {'pos': (-2.5, 6.0, 1.5), 'type': 'wall'},
-            {'pos': (-2.5, 8.0, 1.5), 'type': 'wall'},
-            {'pos': (2.5, 2.0, 1.5), 'type': 'wall'},
-            {'pos': (2.5, 4.0, 1.5), 'type': 'wall'},
-            {'pos': (2.5, 6.0, 1.5), 'type': 'wall'},
-            {'pos': (2.5, 8.0, 1.5), 'type': 'wall'},
-            {'pos': (0.0, 10.0, 1.5), 'type': 'wall'},
-            {'pos': (2.5, 10.0, 1.5), 'type': 'wall'},
-            {'pos': (5.0, 10.0, 1.5), 'type': 'wall'},
-            {'pos': (7.5, 10.0, 1.5), 'type': 'wall'},
-            # Nuisance obstacles are 'obstacle' type
-            {'pos': (1.0, 4.0, 1.5), 'type': 'obstacle'},
-            {'pos': (-1.0, 7.0, 1.5), 'type': 'obstacle'},
-            {'pos': (3.0, 9.0, 1.5), 'type': 'obstacle'},
-            {'pos': (6.0, 9.0, 1.5), 'type': 'obstacle'},
-        ]
+        # A smaller, more focused wall of obstacles
+        self.obstacles_in_odom = []
+        wall_y_position = 5.0
+        wall_start_x = -1.0 
+        wall_end_x = 1.0
+        wall_density = 4 # points per meter
+        
+        num_points = int((wall_end_x - wall_start_x) * wall_density) + 1
+        for i in range(num_points):
+            x = wall_start_x + (i / wall_density)
+            self.obstacles_in_odom.append({'x': x, 'y': wall_y_position, 'z': 1.5})
+        
+        self.get_logger().info(f"Created a focused simulated wall at y={wall_y_position} with {len(self.obstacles_in_odom)} points.")
         
         self.timer = self.create_timer(0.1, self.timer_callback)
 
-    def local_position_callback(self, msg: VehicleLocalPosition):
-        self.drone_x_enu = msg.y
-        self.drone_y_enu = msg.x
-        self.drone_z_enu = -msg.z
-
-    def _publish_single_obstacle_marker(self, marker_id, x, y, z, color):
-        marker_msg = Marker()
-        marker_msg.header.stamp = self.get_clock().now().to_msg()
-        marker_msg.header.frame_id = 'odom' 
-        marker_msg.ns = "obstacles"
-        marker_msg.id = marker_id
-        marker_msg.type = Marker.CYLINDER
-        marker_msg.action = Marker.ADD
-        marker_msg.pose.position.x = x
-        marker_msg.pose.position.y = y
-        marker_msg.pose.position.z = z 
-        marker_msg.pose.orientation.w = 1.0
-        marker_msg.scale.x = 0.8
-        marker_msg.scale.y = 0.8
-        marker_msg.scale.z = 3.0
-        marker_msg.color = color # Use the provided color
-        marker_msg.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
-        self.obstacle_marker_publisher.publish(marker_msg)
-
     def timer_callback(self):
-        points_data = [] 
-        
-        wall_color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.8)  # Orange
-        obstacle_color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=1.0) # Cyan
-
-        for i, obs_data in enumerate(self.obstacles):
-            pos = obs_data['pos']
-            obs_type = obs_data['type']
-            
-            color = wall_color if obs_type == 'wall' else obstacle_color
-            
-            self._publish_single_obstacle_marker(i, pos[0], pos[1], pos[2], color)
-            
-            dist_to_obs_from_drone = math.sqrt(
-                (pos[0] - self.drone_x_enu)**2 +
-                (pos[1] - self.drone_y_enu)**2 +
-                (pos[2] - self.drone_z_enu)**2
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'camera_color_optical_frame',
+                'odom',
+                rclpy.time.Time(),
+                rclpy.duration.Duration(seconds=1.0)
             )
-            if dist_to_obs_from_drone < self.sensor_range:
-                points_data.append(pos)
+        except TransformException as ex:
+            self.get_logger().warn(f"Could not get transform from odom to camera frame, waiting...: {ex}")
+            return
 
-        if points_data:
-            cloud_msg = PointCloud2()
-            cloud_msg.header.stamp = self.get_clock().now().to_msg()
-            cloud_msg.header.frame_id = 'odom'
-            cloud_msg.fields = [
-                PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-                PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-                PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)
-            ]
-            cloud_msg.point_step = 12
-            cloud_msg.row_step = cloud_msg.point_step * len(points_data)
-            cloud_msg.height = 1
-            cloud_msg.width = len(points_data)
-            cloud_msg.is_dense = True
-            byte_data = bytearray()
-            for point in points_data:
-                byte_data.extend(struct.pack('<fff', point[0], point[1], point[2]))
-            cloud_msg.data = bytes(byte_data)
-            self.point_cloud_publisher.publish(cloud_msg)
+        self.publish_obstacle_markers()
+
+        points_in_camera_frame = []
+        for obs in self.obstacles_in_odom:
+            obs_p_stamped = PointStamped(header=Header(frame_id='odom'), point=Point(x=obs['x'], y=obs['y'], z=obs['z']))
+            p_camera = do_transform_point(obs_p_stamped, transform)
+
+            dist_sq = p_camera.point.x**2 + p_camera.point.y**2 + p_camera.point.z**2
+            if dist_sq > self.sensor_range**2:
+                continue
+
+            angle_to_point = math.atan2(p_camera.point.x, p_camera.point.z)
+            if abs(angle_to_point) > (self.sensor_fov_rad / 2.0):
+                continue
+
+            points_in_camera_frame.append([p_camera.point.x, p_camera.point.y, p_camera.point.z])
+
+        if points_in_camera_frame:
+            self.publish_point_cloud(points_in_camera_frame)
+
+    def publish_point_cloud(self, points):
+        header = Header(stamp=self.get_clock().now().to_msg(), frame_id='camera_color_optical_frame')
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)
+        ]
+        point_step = 12
+        
+        cloud_msg = PointCloud2(
+            header=header, height=1, width=len(points), is_dense=True, is_bigendian=False,
+            fields=fields, point_step=point_step, row_step=point_step * len(points),
+            data=np.asarray(points, dtype=np.float32).tobytes()
+        )
+        self.point_cloud_publisher.publish(cloud_msg)
+
+    def publish_obstacle_markers(self):
+        for i, obs in enumerate(self.obstacles_in_odom):
+            marker = Marker()
+            marker.header.frame_id = "odom"
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = "simulated_obstacles"
+            marker.id = i
+            marker.type = Marker.CYLINDER
+            marker.action = Marker.ADD
+            marker.pose.position = Point(x=obs['x'], y=obs['y'], z=obs['z'] / 2.0)
+            marker.pose.orientation.w = 1.0
+            marker.scale = Vector3(x=0.25, y=0.25, z=obs['z'] * 2)
+            marker.color = ColorRGBA(r=0.0, g=0.0, b=0.8, a=0.8)
+            marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
+            self.obstacle_marker_publisher.publish(marker)
 
 def main(args=None):
     rclpy.init(args=args)
