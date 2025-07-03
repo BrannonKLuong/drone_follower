@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# This script launches a hybrid test environment to validate
-# hand-controlled flight with simultaneous obstacle avoidance.
+# This script launches the full test environment to validate
+# hand-controlled flight with simultaneous obstacle avoidance and strobe following.
 
 PROJECT_DIR=~/drone_project
 
@@ -25,15 +25,19 @@ gnome-terminal --tab --title="Odometry TF" -- bash -c "cd $PROJECT_DIR && source
 # Terminal 6: Static TF from base_link to camera_link
 gnome-terminal --tab --title="Camera Mount TF" -- bash -c "source /opt/ros/humble/setup.bash && ros2 run tf2_ros static_transform_publisher 0.1 0.0 0.0 0 0 0 base_link camera_link; exec bash"
 
-# --- HYBRID TEST SETUP ---
-# Both the hand gesture node AND the simulated obstacle node are active.
+# --- REAL-TIME SENSOR AND GOAL NODES ---
 
-# Terminal 7: Hand Gesture Recognition Node (Provides control commands)
+# Terminal 7: Hand Gesture Recognition Node (Provides control commands and real point cloud)
 gnome-terminal --tab --title="Hand Gesture Recognition" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./hand_gesture_recognition_node.py; exec bash"
 
-# Terminal 8: Simulated Depth Sensor (Provides the obstacle environment)
-gnome-terminal --tab --title="Simulated Obstacles" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./simulated_depth_sensor.py; exec bash"
+# NEW: Terminal 8: Strobe Light Publisher (Provides the autonomous goal)
+gnome-terminal --tab --title="Strobe Light" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./strobe_light.py; exec bash"
+
+# DISABLED: The simulated depth sensor is now disabled to allow the RealSense camera from the
+# hand gesture node to be the sole provider of point cloud data.
+# gnome-terminal --tab --title="Simulated Obstacles" -- bash -c "cd $PROJECT_DIR && source /opt/ros/humble/setup.bash && python3 ./simulated_depth_sensor.py; exec bash"
 
 
-echo "Hybrid Test Environment (Hand Control + Avoidance) launching..."
-echo "Both Hand Gesture node and Simulated Obstacle node are ENABLED."
+echo "Full Test Environment (Strobe Following + Avoidance) launching..."
+echo "Simulated obstacle node is DISABLED. RealSense is the primary sensor."
+echo "Strobe light publisher is ENABLED."

@@ -31,17 +31,17 @@ class SimulatedDepthSensorPublisher(Node):
         self.point_cloud_publisher = self.create_publisher(PointCloud2, '/camera/camera/depth/color/points', 10)
         self.obstacle_marker_publisher = self.create_publisher(Marker, '/obstacle_markers', 10)
 
-        # --- MODIFIED: A circular wall of obstacles around the origin ---
+        # --- MODIFIED: A tighter circular wall for a more definitive test ---
         self.obstacles_in_odom = []
-        radius = 4.0
-        num_obstacles = 24 # A good number for a dense wall
+        radius = 2.5 # Reduced from 4.0 to make the course tighter
+        num_obstacles = 30 # Increased density for the smaller circle
         for i in range(num_obstacles):
             angle = (2 * math.pi / num_obstacles) * i
             x = radius * math.cos(angle)
             y = radius * math.sin(angle)
             self.obstacles_in_odom.append({'x': x, 'y': y, 'z': 1.5})
         
-        self.get_logger().info(f"Created a circular wall with {len(self.obstacles_in_odom)} points at radius {radius}m.")
+        self.get_logger().info(f"Created a tighter circular wall with {len(self.obstacles_in_odom)} points at radius {radius}m.")
         
         self.timer = self.create_timer(0.1, self.timer_callback)
 
