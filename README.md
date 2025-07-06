@@ -313,5 +313,3 @@ The project has successfully completed its **simulation validation phase on the 
 * **JetsonHacks/jetson-orin-librealsense**: The kernel modules for Intel RealSense cameras on NVIDIA Jetson Orin devices are adapted from the work by JetsonHacks. This repository is licensed under the MIT License.
     * Repository: [https://github.com/jetsonhacks/jetson-orin-librealsense](https://github.com/jetsonhacks/jetson-orin-librealsense)
     * License: [MIT License](https://github.com/jetsonhacks/jetson-orin-librealsense/blob/main/LICENSE)
-
-* **Licensing Note**: The kernel modules provided by JetsonHacks are derived from Intel RealSense code and may incorporate components under the GNU General Public License (GPL) as part of the Linux kernel. For full licensing details, please refer to the original `LICENSE` file within the JetsonHacks repository and the `THIRD-PARTY-LICENSES.md` file in this repository (if you intend to include one for all third-party licenses).
