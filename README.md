@@ -21,9 +21,17 @@ The core control loop and perception pipeline have been successfully migrated an
 * **Robust Launch System:** The project uses a custom bash script (`run_all_nodes.sh`) to reliably launch all nodes in separate terminal tabs, ensuring proper environment sourcing.
 
 ### Live Demonstration
-*(Update these GIFs once you have captures from the Orin Nano)*
 For a detailed view of the 3D hand tracking and gesture recognition with depth data, see the GIF below.
 ![Hand Gesture Recognition with Depth](./assets/Depth%20Directional%20Hand%20Commands.gif)
+
+### Other Demonstrations
+
+| Hand Gesture Control (Simulated 2D Webcam) | Drone Following Strobe Light Node |
+| :----------------------------------------- | :-------------------------------- |
+| ![Hand Gesture Control](./assets/Drone%20Hand%20Gesture%20Ros.gif) | ![Strobe Following](./assets/Drone%20Following%20Strobe%20Node%20Ros.gif) |
+
+* **On the left (Simulated 2D):** The "**Hand Gesture Recognition**" node processes a live video feed, using an **AI model (MediaPipe)** to classify hand poses into high-level flight commands.
+* **On the right:** The drone autonomously follows strobe light node.
 
 ---
 
@@ -314,7 +322,7 @@ The project has successfully completed its **simulation validation phase on the 
     * Repository: [https://github.com/jetsonhacks/jetson-orin-librealsense](https://github.com/jetsonhacks/jetson-orin-librealsense)
     * License: [MIT License](https://github.com/jetsonhacks/jetson-orin-librealsense/blob/main/LICENSE)
 
-* **Intel RealSense SDK (librealsense)**: The Intel RealSense SDK itself, which the kernel modules support, is covered by Intel's own license. 
+* **Intel RealSense SDK (librealsense)**: The Intel RealSense SDK itself, which the kernel modules support, is covered by Intel's own license.
 
-* **GNU General Public License (GPL) Version 2**: Components of the Linux kernel, which the RealSense kernel modules interact with, are typically licensed under the GNU GPL.
+* **GNU General Public License (GPL) Version 2**: Components of the Linux kernel, which the RealSense kernel modules interact with, are typically licensed under the GNU GPL. 
 
