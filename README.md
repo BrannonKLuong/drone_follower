@@ -157,7 +157,7 @@ This guide details the steps to set up a fresh NVIDIA Orin Nano Developer Kit wi
 * **Open a terminal on your Orin Nano (via NoMachine).**
 * **Register Public Key:**
     ```bash
-    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-key F6E65AC044F831AC80A06380C8B3A55A6F3EFCDE || sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-key F6E65AC044F831AC80A06380C8B3A55A6F3EFCDE
+    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-key F6E65AC044F831AC80A06380C8B3A55A6F3EFCDE || sudo apt-key adv --keyserver keyserver.ubuntu.com:80 --recv-key F6E65AC044F831AC80A06380C8B3A55A6F3EFCDE
     ```
 * **Add Repository:**
     ```bash
@@ -313,3 +313,8 @@ The project has successfully completed its **simulation validation phase on the 
 * **JetsonHacks/jetson-orin-librealsense**: The kernel modules for Intel RealSense cameras on NVIDIA Jetson Orin devices are adapted from the work by JetsonHacks. This repository is licensed under the MIT License.
     * Repository: [https://github.com/jetsonhacks/jetson-orin-librealsense](https://github.com/jetsonhacks/jetson-orin-librealsense)
     * License: [MIT License](https://github.com/jetsonhacks/jetson-orin-librealsense/blob/main/LICENSE)
+
+* **Intel RealSense SDK (librealsense)**: The Intel RealSense SDK itself, which the kernel modules support, is covered by Intel's own license. For full details, refer to the `THIRD-PARTY-LICENSES.md` file.
+
+* **GNU General Public License (GPL) Version 2**: Components of the Linux kernel, which the RealSense kernel modules interact with, are typically licensed under the GNU GPL. For full details, refer to the `THIRD-PARTY-LICENSES.md` file.
+
