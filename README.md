@@ -314,7 +314,7 @@ The project has successfully completed its **simulation validation phase on the 
     * Repository: [https://github.com/jetsonhacks/jetson-orin-librealsense](https://github.com/jetsonhacks/jetson-orin-librealsense)
     * License: [MIT License](https://github.com/jetsonhacks/jetson-orin-librealsense/blob/main/LICENSE)
 
-* **Intel RealSense SDK (librealsense)**: The Intel RealSense SDK itself, which the kernel modules support, is covered by Intel's own license. For full details, refer to the `THIRD-PARTY-LICENSES.md` file.
+* **Intel RealSense SDK (librealsense)**: The Intel RealSense SDK itself, which the kernel modules support, is covered by Intel's own license. 
 
-* **GNU General Public License (GPL) Version 2**: Components of the Linux kernel, which the RealSense kernel modules interact with, are typically licensed under the GNU GPL. For full details, refer to the `THIRD-PARTY-LICENSES.md` file.
+* **GNU General Public License (GPL) Version 2**: Components of the Linux kernel, which the RealSense kernel modules interact with, are typically licensed under the GNU GPL.
 
