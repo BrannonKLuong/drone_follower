@@ -8,8 +8,18 @@ from std_msgs.msg import ColorRGBA
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 import math
 import struct
-import numpy as np
+# import numpy as np # Original import
 from collections import deque
+
+# Attempt to import CuPy for GPU acceleration, otherwise fallback to NumPy
+try:
+    import cupy as cp
+    print("Using CuPy for GPU acceleration in obstacle_perception_node!")
+    NUMPY_LIB = cp # Use CuPy if available
+except ImportError:
+    print("CuPy not found, falling back to NumPy (CPU) for obstacle_perception_node.")
+    import numpy as np # Import NumPy if CuPy is not available
+    NUMPY_LIB = np # Fallback to NumPy
 
 # TF2 imports
 import tf2_ros
@@ -89,7 +99,8 @@ class ObstaclePerceptionNode(Node):
             return
 
         self.get_logger().info(f"Processing {len(points_in_odom)} points...")
-        points_np = np.array(points_in_odom)
+        # Use NUMPY_LIB (either np or cp) here
+        points_np = NUMPY_LIB.array(points_in_odom, dtype=NUMPY_LIB.float32) # Ensure dtype for CuPy compatibility
         clusters = self.euclidean_cluster(points_np)
         
         self.get_logger().info(f"Found {len(clusters)} final clusters.")
@@ -98,11 +109,10 @@ class ObstaclePerceptionNode(Node):
         cluster_centroids = []
         
         for i, cluster in enumerate(clusters):
-            centroid = np.mean(cluster, axis=0)
-            cluster_centroids.append(centroid)
-            
-            marker = self.create_obstacle_marker(centroid, i)
-            marker_array.markers.append(marker)
+            # Convert cluster back to NumPy if it's a CuPy array for mean calculation
+            # or ensure mean is done with CuPy
+            centroid = NUMPY_LIB.mean(cluster, axis=0)
+            cluster_centroids.append(centroid.get() if NUMPY_LIB is cp else centroid) # Convert CuPy array to NumPy for list
 
         # Clear old markers
         if len(clusters) < 100: # Assuming we won't have more than 100 clusters
@@ -122,38 +132,59 @@ class ObstaclePerceptionNode(Node):
 
 
     def euclidean_cluster(self, points):
-        processed = [False] * len(points)
+        # Ensure points are on the GPU if using CuPy
+        if NUMPY_LIB is cp:
+            points = cp.asarray(points)
+
+        processed = NUMPY_LIB.zeros(len(points), dtype=NUMPY_LIB.bool_)
         clusters = []
+        
         for i in range(len(points)):
             if not processed[i]:
-                cluster_points = []
+                cluster_points_indices = []
                 q = deque([i])
                 processed[i] = True
                 
                 while q:
                     p_idx = q.popleft()
-                    cluster_points.append(points[p_idx])
+                    cluster_points_indices.append(p_idx)
                     
-                    for j in range(len(points)):
-                        if not processed[j]:
-                            dist_sq = np.sum((points[p_idx] - points[j])**2)
-                            if dist_sq < self.cluster_tolerance**2:
-                                processed[j] = True
-                                q.append(j)
+                    # Compute squared distances from current point to all other unprocessed points
+                    # This is the most computationally intensive part, where CuPy shines
+                    distances_sq = NUMPY_LIB.sum((points[p_idx] - points[~processed])**2, axis=1)
+                    
+                    # Get indices of points within tolerance
+                    close_relative_indices = NUMPY_LIB.where(distances_sq < self.cluster_tolerance**2)[0]
+                    
+                    # Map relative indices back to original absolute indices
+                    unprocessed_absolute_indices = NUMPY_LIB.where(~processed)[0]
+                    close_absolute_indices = unprocessed_absolute_indices[close_relative_indices]
+                    
+                    for j_abs in close_absolute_indices:
+                        if not processed[j_abs]:
+                            processed[j_abs] = True
+                            q.append(j_abs)
                 
-                self.get_logger().debug(f"  - Found a potential cluster with {len(cluster_points)} points.")
-                if self.min_cluster_size <= len(cluster_points) <= self.max_cluster_size:
-                    self.get_logger().info(f"  - Cluster ACCEPTED with size {len(cluster_points)}.")
-                    clusters.append(np.array(cluster_points))
+                # Retrieve actual points for the cluster
+                current_cluster_points = points[NUMPY_LIB.array(cluster_points_indices)]
+
+                self.get_logger().debug(f"  - Found a potential cluster with {len(current_cluster_points)} points.")
+                if self.min_cluster_size <= len(current_cluster_points) <= self.max_cluster_size:
+                    self.get_logger().info(f"  - Cluster ACCEPTED with size {len(current_cluster_points)}.")
+                    clusters.append(current_cluster_points)
                 else:
-                    self.get_logger().debug(f"  - Cluster REJECTED with size {len(cluster_points)} (min: {self.min_cluster_size}).")
+                    self.get_logger().debug(f"  - Cluster REJECTED with size {len(current_cluster_points)} (min: {self.min_cluster_size}).")
         return clusters
 
     def publish_centroids_as_pointcloud(self, centroids, original_header):
         header = original_header
         header.frame_id = 'odom'
         
-        points_to_publish = np.array(centroids, dtype=np.float32)
+        # Convert centroids to NumPy array if they are CuPy arrays
+        if NUMPY_LIB is cp:
+            centroids_np = cp.asnumpy(cp.array(centroids, dtype=cp.float32))
+        else:
+            centroids_np = NUMPY_LIB.array(centroids, dtype=NUMPY_LIB.float32)
         
         fields = [
             PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
@@ -163,11 +194,11 @@ class ObstaclePerceptionNode(Node):
         point_step = 12
         
         cloud_msg = PointCloud2(
-            header=header, height=1, width=len(points_to_publish), 
+            header=header, height=1, width=len(centroids_np), 
             is_dense=True, is_bigendian=False,
             fields=fields, point_step=point_step, 
-            row_step=point_step * len(points_to_publish),
-            data=points_to_publish.tobytes()
+            row_step=point_step * len(centroids_np),
+            data=centroids_np.tobytes()
         )
         self.obstacle_centroids_publisher.publish(cloud_msg)
 
@@ -179,7 +210,8 @@ class ObstaclePerceptionNode(Node):
         marker.id = marker_id
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
-        marker.pose.position = Point(x=position[0], y=position[1], z=position[2])
+        # Convert CuPy scalar to Python scalar if necessary
+        marker.pose.position = Point(x=float(position[0]), y=float(position[1]), z=float(position[2]))
         marker.pose.orientation.w = 1.0
         marker.scale = Vector3(x=0.5, y=0.5, z=0.5)
         marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8)
