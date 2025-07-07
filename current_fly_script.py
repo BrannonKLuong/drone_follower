@@ -30,12 +30,10 @@ class DroneCommander(Node):
         self.declare_parameter('repulsion_strength', 0.5)
         self.declare_parameter('repulsion_falloff_rate', 1.0)
         self.declare_parameter('goal_tolerance_radius', 1.5)
-        # NEW: Parameter for how far ahead the pointing target should be
         self.declare_parameter('pointing_target_distance', 0.5) 
-        # NEW: Parameter for vertical pointing sensitivity
         self.declare_parameter('vertical_pointing_threshold_deg', 15.0) # Degrees for vertical movement
         self.declare_parameter('min_flight_altitude', 0.5) # Minimum altitude for safety
-        self.declare_parameter('max_flight_altitude', 3.0) # Maximum altitude for safety
+        self.declare_parameter('max_flight_altitude', 2.0) # Maximum altitude for safety
         # NEW: Parameter for yaw control deadband
         self.declare_parameter('yaw_pointing_deadband_magnitude', 0.1) # Min horizontal pointing vector magnitude for yaw control
 
@@ -87,7 +85,7 @@ class DroneCommander(Node):
         self.hand_command_sub = self.create_subscription(String, '/hand_commands', self.hand_command_callback, 10)
         self.hand_pointing_vector_sub = self.create_subscription(Vector3Stamped, '/hand_pointing_vector', self.hand_pointing_vector_callback, 10)
 
-        # NEW: Publisher for the target marker
+        # Publisher for the target marker
         self.target_marker_publisher = self.create_publisher(Marker, '/drone_target_marker', 10)
 
         # --- TF2 Setup ---
@@ -99,7 +97,7 @@ class DroneCommander(Node):
         self.local_position = VehicleLocalPosition()
         self.vehicle_status = VehicleStatus()
         self.landing_initiated = False
-        self.movement_speed = 0.5 # This will now scale the final movement velocity
+        self.movement_speed = 0.5 # scale the final movement velocity
         self.current_drone_yaw = 0.0 # Yaw in radians
         self.current_hand_command = "NO_HAND"
         self.last_pointing_vector_stamped = None
@@ -394,20 +392,6 @@ class DroneCommander(Node):
         px4_setpoint_y_ned = next_x_enu # East
         px4_setpoint_z_ned = -next_z_enu # Down
         
-        # Convert ENU yaw to NED yaw for PX4
-        # The `desired_yaw_enu` is the angle from ENU X (East) to the vector (px, py).
-        # For PX4 NED, the X-axis is North, Y-axis is East.
-        # So, the target vector components in NED are (py, px).
-        # Thus, the desired yaw in NED is `atan2(East_component_from_ENU, North_component_from_ENU)`.
-        # Which is `atan2(math.cos(desired_yaw_enu), math.sin(desired_yaw_enu))` if `desired_yaw_enu` is from `atan2(North_component, East_component)`.
-        # Given `desired_yaw_enu = math.atan2(py, px)` where `px` is East and `py` is North.
-        # We want `atan2(px, py)` for NED yaw.
-        # This is equivalent to `math.atan2(math.sin(desired_yaw_enu + math.pi/2), math.cos(desired_yaw_enu + math.pi/2))`
-        # Let's use the robust conversion from ENU yaw to NED yaw.
-        # ENU yaw (angle from East, CCW) to NED yaw (angle from North, CW)
-        # A common conversion is `NED_yaw = -(ENU_yaw - pi/2)`
-        # Or, `NED_yaw = pi/2 - ENU_yaw` (if both are CCW from their respective X axes)
-        # Let's use the `atan2(cos(enu_yaw), sin(enu_yaw))` as it's a direct transformation for axis swap.
         yaw_to_publish_ned = math.atan2(math.cos(desired_yaw_enu), math.sin(desired_yaw_enu))
 
         self.publish_trajectory_setpoint(px4_setpoint_x_ned, px4_setpoint_y_ned, px4_setpoint_z_ned, yaw_to_publish_ned)
