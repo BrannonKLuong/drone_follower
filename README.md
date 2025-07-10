@@ -2,7 +2,7 @@
 
 **Status:** `ArduPilot Integration Complete - Validated on NVIDIA Orin Nano & Ready for Flight Controller Testing`
 
-This repository contains the **ROS 2** software stack for a compact, autonomous drone designed for tactical indoor and close-quarters operations. The system uses an **offboard computing architecture** to enable a small, agile aerial platform to perform complex perception and navigation tasks, with real-time control via hand gestures from an operator.
+This repository contains the **ROS 2** software stack for a compact, autonomous drone designed for tactical indoor and close-quarters operations. The system uses an **offboard computing architecture** to enable an aerial platform to perform complex perception and navigation tasks, with real-time control via hand gestures from an operator.
 
 ---
 
