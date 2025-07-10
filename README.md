@@ -129,7 +129,15 @@ Prior to the current ArduPilot integration, this project was configured to inter
 **While the current active codebase is for ArduPilot, the core logic and structure of the `DroneCommander` and perception nodes are adaptable.** If there's a future need to revert to PX4 or support both, the previous versions of the PX4 interface nodes could be re-integrated, and the `current_fly_script.py` could be modified to conditionally use PX4 messages/topics.
 
 ---
+## Future Work / Next Steps
 
+Once the Cube Orange+ flight controller is fully integrated and the drone achieves basic flight functionality (e.g., motors fire, stable hover), the next significant step will be to implement a **Simultaneous Localization and Mapping (SLAM) algorithm**. This will enable the drone to:
+
+* **Build a map of its unknown environment** in real-time.
+* **Localize itself within that map** without relying solely on external positioning systems like GPS.
+
+This is crucial for robust autonomous navigation in complex indoor and GPS-denied environments, allowing the drone to understand its surroundings and track its own position accurately.
+---
 ## Installation Guide: Setting up NVIDIA Orin Nano for Drone Development
 
 This guide details the steps to set up a fresh NVIDIA Orin Nano Developer Kit with Ubuntu 22.04 (JetPack), ROS 2 Humble, Intel RealSense drivers, and all necessary project dependencies.
@@ -434,10 +442,6 @@ Once RViz2 launches, configure its displays:
     * **Marker:** Topic: `/hand_pointing_arrow` (orange arrow).
 
     * **(Optional) PoseStamped:** Topic: `/strobe_light_position` (magenta sphere, if strobe light is used).
-
-## Next Steps (Hardware Integration)
-
-The project has successfully completed its **simulation validation phase on the NVIDIA Orin Nano** with the ArduPilot communication layer. The next major focus is on integrating the validated software stack with the physical drone hardware (Cube Orange+ with ArduPilot firmware).
 
 ## Acknowledgements and Licensing
 
