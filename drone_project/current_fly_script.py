@@ -36,18 +36,10 @@ class DroneCommander(Node):
         self.declare_parameter('repulsion_strength', 0.5)
         self.declare_parameter('repulsion_falloff_rate', 1.0)
         self.declare_parameter('goal_tolerance_radius', 1.5)
-<<<<<<< HEAD:current_fly_script.py
-        self.declare_parameter('pointing_target_distance', 0.5) 
-        self.declare_parameter('vertical_pointing_threshold_deg', 15.0) # Degrees for vertical movement
-        self.declare_parameter('min_flight_altitude', 0.5) # Minimum altitude for safety
-        self.declare_parameter('max_flight_altitude', 2.0) # Maximum altitude for safety
-        # NEW: Parameter for yaw control deadband
-=======
         self.declare_parameter('pointing_target_distance', 0.5)
         self.declare_parameter('vertical_pointing_threshold_deg', 15.0) # Degrees for vertical movement
         self.declare_parameter('min_flight_altitude', 0.5) # Minimum altitude for safety
         self.declare_parameter('max_flight_altitude', 2.0) # Maximum altitude for safety
->>>>>>> aedfae3 (Refactor to ArduPilot: Updated node names, moved scripts to package subdirectory, adjusted launch, build, and removed simulated components for hardware integration.):drone_project/current_fly_script.py
         self.declare_parameter('yaw_pointing_deadband_magnitude', 0.1) # Min horizontal pointing vector magnitude for yaw control
 
         # --- Get parameters ---
@@ -136,11 +128,7 @@ class DroneCommander(Node):
         self.hand_command_sub = self.create_subscription(String, '/hand_commands', self.hand_command_callback, 10)
         self.hand_pointing_vector_sub = self.create_subscription(Vector3Stamped, '/hand_pointing_vector', self.hand_pointing_vector_callback, 10)
 
-<<<<<<< HEAD:current_fly_script.py
-        # Publisher for the target marker
-=======
         # Publisher for the target marker in RViz
->>>>>>> aedfae3 (Refactor to ArduPilot: Updated node names, moved scripts to package subdirectory, adjusted launch, build, and removed simulated components for hardware integration.):drone_project/current_fly_script.py
         self.target_marker_publisher = self.create_publisher(Marker, '/drone_target_marker', 10)
 
         # --- TF2 Setup ---
@@ -156,10 +144,6 @@ class DroneCommander(Node):
         self.current_flight_mode = "UNKNOWN" # Current flight mode from ArduPilot mock
         self.landing_initiated = False
         self.movement_speed = 0.5 # scale the final movement velocity
-<<<<<<< HEAD:current_fly_script.py
-        self.current_drone_yaw = 0.0 # Yaw in radians
-=======
->>>>>>> aedfae3 (Refactor to ArduPilot: Updated node names, moved scripts to package subdirectory, adjusted launch, build, and removed simulated components for hardware integration.):drone_project/current_fly_script.py
         self.current_hand_command = "NO_HAND"
         self.last_pointing_vector_stamped = None
         self.control_mode = "MISSION" if self.test_scenario_active else "HAND_CONTROL"
@@ -480,25 +464,8 @@ class DroneCommander(Node):
         # For Z, we directly use the target_z_attract_enu (which considers hover_altitude and vertical pointing)
         next_z_enu = target_z_attract_enu
 
-<<<<<<< HEAD:current_fly_script.py
-        # --- Convert ENU coordinates and yaw to NED for PX4 setpoint ---
-        # ENU (X=East, Y=North, Z=Up) to NED (X=North, Y=East, Z=Down)
-        # x_ned = y_enu
-        # y_ned = x_enu
-        # z_ned = -z_enu
-
-        # Position setpoint for PX4
-        px4_setpoint_x_ned = next_y_enu # North
-        px4_setpoint_y_ned = next_x_enu # East
-        px4_setpoint_z_ned = -next_z_enu # Down
-        
-        yaw_to_publish_ned = math.atan2(math.cos(desired_yaw_enu), math.sin(desired_yaw_enu))
-
-        self.publish_trajectory_setpoint(px4_setpoint_x_ned, px4_setpoint_y_ned, px4_setpoint_z_ned, yaw_to_publish_ned)
-=======
         # Publish setpoint in ENU
         self.publish_setpoint_pose(next_x_enu, next_y_enu, next_z_enu, desired_yaw_enu)
->>>>>>> aedfae3 (Refactor to ArduPilot: Updated node names, moved scripts to package subdirectory, adjusted launch, build, and removed simulated components for hardware integration.):drone_project/current_fly_script.py
 
     def publish_target_marker(self, x_enu, y_enu, z_enu, action):
         """Publishes an RViz marker for the drone's calculated target position."""
@@ -547,4 +514,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
