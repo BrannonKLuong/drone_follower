@@ -455,4 +455,4 @@ The project has successfully completed its **simulation validation phase on the 
 
     * ArduPilot Website: <https://ardupilot.org/>
 
-    * ArduPilot License Information: [[https://ardupilot.org/dev/docs/licensing.html](https://ardupilot.org/dev/docs/licensing.html](https://ardupilot.org/dev/docs/license-gplv3.html))
+    * ArduPilot License Information: [https://ardupilot.org/dev/docs/licensing.html](https://ardupilot.org/dev/docs/license-gplv3.html)
