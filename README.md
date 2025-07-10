@@ -137,6 +137,7 @@ Once the Cube Orange+ flight controller is fully integrated and the drone achiev
 * **Localize itself within that map** without relying solely on external positioning systems like GPS.
 
 This is crucial for robust autonomous navigation in complex indoor and GPS-denied environments, allowing the drone to understand its surroundings and track its own position accurately.
+
 ---
 ## Installation Guide: Setting up NVIDIA Orin Nano for Drone Development
 
