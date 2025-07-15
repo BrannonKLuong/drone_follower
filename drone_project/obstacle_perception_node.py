@@ -1,13 +1,14 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
-# Removed: from px4_msgs.msg import VehicleOdometry # This line caused the error
+from px4_msgs.msg import VehicleOdometry
 from geometry_msgs.msg import Point, PointStamped, Vector3
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 import math
 import struct
+# import numpy as np # Original import
 from collections import deque
 
 # Attempt to import CuPy for GPU acceleration, otherwise fallback to NumPy
@@ -112,11 +113,8 @@ class ObstaclePerceptionNode(Node):
             # or ensure mean is done with CuPy
             centroid = NUMPY_LIB.mean(cluster, axis=0)
             cluster_centroids.append(centroid.get() if NUMPY_LIB is cp else centroid) # Convert CuPy array to NumPy for list
-            # Add marker for the centroid
-            marker_array.markers.append(self.create_obstacle_marker(centroid, i))
 
-        # Clear old markers (assuming max 100 clusters for simplicity)
-        # If there are fewer current clusters than the last time, delete the old ones
+        # Clear old markers
         if len(clusters) < 100: # Assuming we won't have more than 100 clusters
             for i in range(len(clusters), 100):
                 delete_marker = Marker()

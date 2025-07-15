@@ -27,7 +27,8 @@ setup(
     include_package_data=True,
     entry_points={
         'console_scripts': [
-            'mock_ardupilot = drone_project.mock_ardupilot:main',
+            #'mock_ardupilot = drone_project.mock_ardupilot:main',
+            'ardupilot_interface_node = drone_project.ardupilot_interface_node:main',
             'ardupilot_odometry_to_tf_publisher = drone_project.ardupilot_odometry_to_tf_publisher:main',
             'current_fly_script = drone_project.current_fly_script:main',
             'hand_gesture_recognition_node = drone_project.hand_gesture_recognition_node:main',
