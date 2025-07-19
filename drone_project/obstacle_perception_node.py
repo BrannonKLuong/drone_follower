@@ -1,15 +1,17 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
-from px4_msgs.msg import VehicleOdometry
+# from px4_msgs.msg import VehicleOdometry # Not used in this node's core logic
 from geometry_msgs.msg import Point, PointStamped, Vector3
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 import math
 import struct
-# import numpy as np # Original import
 from collections import deque
+
+# ALWAYS import numpy as np, regardless of CuPy status
+import numpy as np # <-- ADD THIS LINE HERE AND ENSURE IT'S AT THE TOP
 
 # Attempt to import CuPy for GPU acceleration, otherwise fallback to NumPy
 try:
@@ -18,8 +20,8 @@ try:
     NUMPY_LIB = cp # Use CuPy if available
 except ImportError:
     print("CuPy not found, falling back to NumPy (CPU) for obstacle_perception_node.")
-    import numpy as np # Import NumPy if CuPy is not available
-    NUMPY_LIB = np # Fallback to NumPy
+    # NUMPY_LIB = np # This line is correct here to assign np if CuPy isn't found
+    NUMPY_LIB = np # Re-assign for clarity, or just keep the original line if it's the only assignment here
 
 # TF2 imports
 import tf2_ros
@@ -109,10 +111,12 @@ class ObstaclePerceptionNode(Node):
         cluster_centroids = []
         
         for i, cluster in enumerate(clusters):
-            # Convert cluster back to NumPy if it's a CuPy array for mean calculation
-            # or ensure mean is done with CuPy
-            centroid = NUMPY_LIB.mean(cluster, axis=0)
-            cluster_centroids.append(centroid.get() if NUMPY_LIB is cp else centroid) # Convert CuPy array to NumPy for list
+            # cluster is a NumPy array from euclidean_cluster (due to the .get() in append)
+            centroid = NUMPY_LIB.mean(cluster, axis=0) # This will be a NumPy array
+            cluster_centroids.append(centroid) # Append directly, no .get() here as it's NumPy
+            
+            # Add marker for the centroid
+            marker_array.markers.append(self.create_obstacle_marker(centroid, i)) # Pass NumPy array
 
         # Clear old markers
         if len(clusters) < 100: # Assuming we won't have more than 100 clusters
@@ -135,6 +139,8 @@ class ObstaclePerceptionNode(Node):
         # Ensure points are on the GPU if using CuPy
         if NUMPY_LIB is cp:
             points = cp.asarray(points)
+        else: # NUMPY_LIB is np
+            points = np.asarray(points) # Ensure it's a NumPy array
 
         processed = NUMPY_LIB.zeros(len(points), dtype=NUMPY_LIB.bool_)
         clusters = []
@@ -150,41 +156,47 @@ class ObstaclePerceptionNode(Node):
                     cluster_points_indices.append(p_idx)
                     
                     # Compute squared distances from current point to all other unprocessed points
-                    # This is the most computationally intensive part, where CuPy shines
-                    distances_sq = NUMPY_LIB.sum((points[p_idx] - points[~processed])**2, axis=1)
+                    if NUMPY_LIB is cp:
+                        unprocessed_mask = cp.logical_not(processed)
+                        unprocessed_points = points[unprocessed_mask]
+                        distances_sq = NUMPY_LIB.sum((points[p_idx] - unprocessed_points)**2, axis=1)
+                        # Convert to Python list explicitly for subsequent CPU operations
+                        close_relative_indices = NUMPY_LIB.where(distances_sq < self.cluster_tolerance**2)[0].tolist()
+                        unprocessed_absolute_indices = NUMPY_LIB.where(cp.logical_not(processed))[0].tolist()
+                    else: # NUMPY_LIB is np
+                        distances_sq = NUMPY_LIB.sum((points[p_idx] - points[~processed])**2, axis=1)
+                        close_relative_indices = NUMPY_LIB.where(distances_sq < self.cluster_tolerance**2)[0].tolist()
+                        unprocessed_absolute_indices = NUMPY_LIB.where(~processed)[0].tolist()
+
+                    # Perform indexing using standard Python list operations, then convert to NUMPY_LIB array.
+                    current_abs_indices = [unprocessed_absolute_indices[idx] for idx in close_relative_indices]
                     
-                    # Get indices of points within tolerance
-                    close_relative_indices = NUMPY_LIB.where(distances_sq < self.cluster_tolerance**2)[0]
-                    
-                    # Map relative indices back to original absolute indices
-                    unprocessed_absolute_indices = NUMPY_LIB.where(~processed)[0]
-                    close_absolute_indices = unprocessed_absolute_indices[close_relative_indices]
-                    
-                    for j_abs in close_absolute_indices:
+                    for j_abs in current_abs_indices:
                         if not processed[j_abs]:
                             processed[j_abs] = True
                             q.append(j_abs)
                 
                 # Retrieve actual points for the cluster
-                current_cluster_points = points[NUMPY_LIB.array(cluster_points_indices)]
+                # Ensure correct array type for indexing and conversion for appending
+                if NUMPY_LIB is cp:
+                    indices_array = cp.asarray(cluster_points_indices, dtype=cp.int32)
+                    current_cluster_points = points[indices_array]
+                    # Convert to NumPy for appending to Python list 'clusters'
+                    clusters.append(current_cluster_points.get()) # Use .get() to transfer from GPU
+                else: # NUMPY_LIB is np
+                    indices_array = np.asarray(cluster_points_indices, dtype=np.int32)
+                    current_cluster_points = points[indices_array]
+                    clusters.append(current_cluster_points) # Already NumPy
 
-                self.get_logger().debug(f"  - Found a potential cluster with {len(current_cluster_points)} points.")
-                if self.min_cluster_size <= len(current_cluster_points) <= self.max_cluster_size:
-                    self.get_logger().info(f"  - Cluster ACCEPTED with size {len(current_cluster_points)}.")
-                    clusters.append(current_cluster_points)
-                else:
-                    self.get_logger().debug(f"  - Cluster REJECTED with size {len(current_cluster_points)} (min: {self.min_cluster_size}).")
         return clusters
 
     def publish_centroids_as_pointcloud(self, centroids, original_header):
         header = original_header
         header.frame_id = 'odom'
         
-        # Convert centroids to NumPy array if they are CuPy arrays
-        if NUMPY_LIB is cp:
-            centroids_np = cp.asnumpy(cp.array(centroids, dtype=cp.float32))
-        else:
-            centroids_np = NUMPY_LIB.array(centroids, dtype=NUMPY_LIB.float32)
+        # 'centroids' here will always be a list of NumPy arrays (from clusters.append in euclidean_cluster)
+        # So, simply convert the list of NumPy arrays to a single NumPy array.
+        centroids_np = np.asarray(centroids, dtype=np.float32)
         
         fields = [
             PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
@@ -210,12 +222,11 @@ class ObstaclePerceptionNode(Node):
         marker.id = marker_id
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
-        # Convert CuPy scalar to Python scalar if necessary
+        # 'position' will be a NumPy array here from the main callback's loop
         marker.pose.position = Point(x=float(position[0]), y=float(position[1]), z=float(position[2]))
         marker.pose.orientation.w = 1.0
         marker.scale = Vector3(x=0.5, y=0.5, z=0.5)
         marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8)
-        # Increased lifetime for better visibility
         marker.lifetime = rclpy.duration.Duration(seconds=2.0).to_msg()
         return marker
 
@@ -241,4 +252,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
