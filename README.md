@@ -31,7 +31,7 @@ For a detailed view of the 3D hand tracking and gesture recognition with depth d
 ![Hand Gesture Recognition with Depth](./assets/Depth%20Directional%20Hand%20Commands.gif)
 
 ### Orb Slam3 Demonstration
-![ORB_SLAM3 perform real-time visual-inertial odometry and mapping](./assets/ORB3_Demo.gif)
+![ORB_SLAM3 perform real-time visual-inertial odometry and mapping](./assets/orb3_slam_with_tf.gif)
 
 ### Other Demonstrations
 
